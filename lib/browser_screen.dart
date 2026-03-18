@@ -180,22 +180,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
         'url': currentUrl,
       });
       await svc.saveShortcut(name, currentUrl);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 12),
-                Text('Skrót "$name" dodany do ekranu głównego'),
-              ],
-            ),
-            backgroundColor: Colors.green.shade700,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -388,10 +372,26 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         ),
                         const SizedBox(height: 4),
                         GestureDetector(
-                          onTap: () => url_launcher.launchUrl(
-                            Uri.parse('mailto:pagafryba@gmail.com'),
-                            mode: url_launcher.LaunchMode.externalApplication,
-                          ),
+                          onTap: () async {
+                            final uri = Uri.parse('mailto:pagafryba@gmail.com');
+                            if (await url_launcher.canLaunchUrl(uri)) {
+                              await url_launcher.launchUrl(
+                                uri,
+                                mode:
+                                    url_launcher.LaunchMode.externalApplication,
+                              );
+                            } else {
+                              // Brak aplikacji email — otwórz w WebView
+                              Navigator.pop(ctx);
+                              svc.currentTab.controller?.loadUrl(
+                                urlRequest: URLRequest(
+                                  url: WebUri(
+                                    'https://mail.google.com/mail/?view=cm&to=pagafryba@gmail.com',
+                                  ),
+                                ),
+                              );
+                            }
+                          },
                           child: const Text(
                             'pagafryba@gmail.com',
                             style: TextStyle(
@@ -403,10 +403,23 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         ),
                         const SizedBox(height: 4),
                         GestureDetector(
-                          onTap: () => url_launcher.launchUrl(
-                            Uri.parse('https://github.com/Fryciu'),
-                            mode: url_launcher.LaunchMode.externalApplication,
-                          ),
+                          onTap: () async {
+                            final uri = Uri.parse('https://github.com/Fryciu');
+                            if (await url_launcher.canLaunchUrl(uri)) {
+                              await url_launcher.launchUrl(
+                                uri,
+                                mode:
+                                    url_launcher.LaunchMode.externalApplication,
+                              );
+                            } else {
+                              Navigator.pop(ctx);
+                              svc.currentTab.controller?.loadUrl(
+                                urlRequest: URLRequest(
+                                  url: WebUri('https://github.com/Fryciu'),
+                                ),
+                              );
+                            }
+                          },
                           child: const Text(
                             'github.com/Fryciu',
                             style: TextStyle(
@@ -416,6 +429,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                             ),
                           ),
                         ),
+
                         const SizedBox(height: 8),
                         const Divider(color: Colors.grey),
                         const SizedBox(height: 4),
@@ -425,12 +439,16 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         ),
                         const SizedBox(height: 4),
                         GestureDetector(
-                          onTap: () => url_launcher.launchUrl(
-                            Uri.parse(
-                              'https://www.flaticon.com/free-icons/isometric',
-                            ),
-                            mode: url_launcher.LaunchMode.externalApplication,
-                          ),
+                          onTap: () {
+                            Navigator.pop(ctx); // zamknij dialog
+                            svc.currentTab.controller?.loadUrl(
+                              urlRequest: URLRequest(
+                                url: WebUri(
+                                  'https://www.flaticon.com/free-icons/isometric',
+                                ),
+                              ),
+                            );
+                          },
                           child: const Text(
                             'Isometric icons created by Freepik - Flaticon',
                             style: TextStyle(
@@ -793,6 +811,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   void _showListEditor(BrowserService svc) {
     final addC = TextEditingController();
+    bool authenticated = svc.savedPassword == null; // ← poza showDialog
+
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -814,19 +834,19 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 ),
                 tooltip: "Wyczyść wszystko",
                 onPressed: () async {
-                  final confirm = await _askForPasswordOnly(svc);
-                  if (confirm == true) {
-                    await svc.clearBlackList();
-                    setDS(() {});
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            "Lista została całkowicie wyczyszczona",
-                          ),
-                        ),
-                      );
-                    }
+                  if (!authenticated) {
+                    final granted = await _askForPasswordOnly(svc);
+                    if (granted != true) return;
+                    authenticated = true;
+                  }
+                  await svc.clearBlackList();
+                  setDS(() {});
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("Lista została całkowicie wyczyszczona"),
+                      ),
+                    );
                   }
                 },
               ),
@@ -883,7 +903,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
                                 color: Colors.redAccent,
                                 size: 20,
                               ),
-                              onPressed: () {
+                              onPressed: () async {
+                                if (!authenticated) {
+                                  final granted = await _askForPasswordOnly(
+                                    svc,
+                                  );
+                                  if (granted != true) return;
+                                  authenticated = true;
+                                }
                                 svc.removeFromBlackList(index);
                                 setDS(() {});
                               },
@@ -907,7 +934,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
       ),
     );
   }
-
   // ── Historia ─────────────────────────────────
 
   void _showHistory(BrowserService svc) {
@@ -1880,6 +1906,9 @@ class _PasswordDialogState extends State<_PasswordDialog> {
   final _newPController = TextEditingController();
   final _oldPController = TextEditingController();
 
+  bool _obscureOld = true;
+  bool _obscureNew = true;
+
   @override
   void dispose() {
     _newPController.dispose();
@@ -1908,15 +1937,51 @@ class _PasswordDialogState extends State<_PasswordDialog> {
           if (hasP)
             TextField(
               controller: _oldPController,
-              obscureText: true,
+              obscureText: _obscureOld,
               style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(hintText: "Stare hasło"),
+              contextMenuBuilder: (context, editableTextState) {
+                return AdaptiveTextSelectionToolbar.buttonItems(
+                  anchors: editableTextState.contextMenuAnchors,
+                  buttonItems: editableTextState.contextMenuButtonItems,
+                );
+              },
+              decoration: InputDecoration(
+                hintText: "Stare hasło",
+                hintStyle: const TextStyle(color: Colors.grey),
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscureOld ? Icons.visibility : Icons.visibility_off,
+                    color: Colors.blue,
+                    size: 20,
+                  ),
+                  onPressed: () => setState(() => _obscureOld = !_obscureOld),
+                ),
+              ),
             ),
+          const SizedBox(height: 16),
+          // POLE: NOWE HASŁO
           TextField(
             controller: _newPController,
-            obscureText: true,
+            obscureText: _obscureNew,
             style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(hintText: "Nowe hasło"),
+            contextMenuBuilder: (context, editableTextState) {
+              return AdaptiveTextSelectionToolbar.buttonItems(
+                anchors: editableTextState.contextMenuAnchors,
+                buttonItems: editableTextState.contextMenuButtonItems,
+              );
+            },
+            decoration: InputDecoration(
+              hintText: "Nowe hasło",
+              hintStyle: const TextStyle(color: Colors.grey),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscureNew ? Icons.visibility : Icons.visibility_off,
+                  color: Colors.blue,
+                  size: 20,
+                ),
+                onPressed: () => setState(() => _obscureNew = !_obscureNew),
+              ),
+            ),
           ),
         ],
       ),
