@@ -16,8 +16,6 @@ Zablokowane Rozszerzenia: Kontrola nad tym, jakie dodatki mogą być uruchamiane
 Zarządzanie Historią: Szybki dostęp do historii przeglądania z opcją jej czyszczenia.
 
 ## User Experience
-Tryb Ciemny (Dark Mode): Interfejs zoptymalizowany pod kątem niskiego zużycia energii i ochrony wzroku (kolorystyka #202124).
-
 Skróty na Ekranie Głównym: Szybki dostęp do ulubionych witryn bezpośrednio z pulpitu urządzenia.
 
-Intuicyjne Menu Ustawień: Wszystkie opcje filtrowania dostępne w zasięgu jednego kliknięcia w nowoczesnym dolnym panelu (Bottom Sheet).
+Intuicyjne Menu Ustawień: Wszystkie opcje filtrowania dostępne w zasięgu jednego kliknięcia w nowoczesnym panelu ustawień.
