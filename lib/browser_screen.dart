@@ -225,6 +225,171 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
+  void _showAdBlockMenu(BrowserService svc) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF202124),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.blue),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _showSettingsMenu(svc);
+                    },
+                  ),
+                  const Icon(Icons.shield, color: Colors.green, size: 22),
+                  const SizedBox(width: 8),
+                  const Text(
+                    "AdBlock",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.grey),
+            SwitchListTile(
+              title: const Text(
+                "AdBlock",
+                style: TextStyle(color: Colors.white),
+              ),
+              secondary: Icon(
+                Icons.shield,
+                color: svc.adBlockEnabled ? Colors.green : Colors.grey,
+              ),
+              value: svc.adBlockEnabled,
+              onChanged: (val) async {
+                await svc.setAdBlock(val);
+                setModalState(() {});
+                svc.currentTab.controller?.reload();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.checklist, color: Colors.blue),
+              title: const Text(
+                "Wyjątki (wyłączony AdBlock)",
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: Text(
+                "${svc.adBlockWhitelist.length} stron",
+                style: const TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _showAdBlockWhitelist(svc);
+              },
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showAdBlockWhitelist(BrowserService svc) {
+    final addC = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDS) => AlertDialog(
+          backgroundColor: const Color(0xFF202124),
+          title: const Text(
+            "Wyjątki AdBlock",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: addC,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: "Dodaj domenę (np. example.com)",
+                    hintStyle: const TextStyle(color: Colors.grey),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.add, color: Colors.blue),
+                      onPressed: () {
+                        if (addC.text.isNotEmpty) {
+                          svc.addToAdBlockWhitelist(addC.text);
+                          addC.clear();
+                          setDS(() {});
+                        }
+                      },
+                    ),
+                  ),
+                ),
+                const Divider(color: Colors.grey),
+                Flexible(
+                  child: svc.adBlockWhitelist.isEmpty
+                      ? const Padding(
+                          padding: EdgeInsets.all(20),
+                          child: Text(
+                            "Brak wyjątków — AdBlock działa na wszystkich stronach",
+                            style: TextStyle(color: Colors.grey),
+                            textAlign: TextAlign.center,
+                          ),
+                        )
+                      : ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: svc.adBlockWhitelist.length,
+                          itemBuilder: (context, index) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(
+                              Icons.language,
+                              color: Colors.blue,
+                              size: 18,
+                            ),
+                            title: Text(
+                              svc.adBlockWhitelist[index],
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                            trailing: IconButton(
+                              icon: const Icon(
+                                Icons.close,
+                                color: Colors.redAccent,
+                                size: 20,
+                              ),
+                              onPressed: () {
+                                svc.removeFromAdBlockWhitelist(index);
+                                setDS(() {});
+                              },
+                            ),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text(
+                "ZAMKNIJ",
+                style: TextStyle(color: Colors.blue),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── Ustawienia ───────────────────────────────
 
   void _showSettingsMenu(BrowserService svc) {
@@ -238,34 +403,25 @@ class _BrowserScreenState extends State<BrowserScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(height: 10),
-          SwitchListTile(
-            title: const Text(
-              "Filtr treści (Porno/SafeSearch)",
-              style: TextStyle(color: Colors.white),
+          ListTile(
+            leading: Icon(
+              Icons.shield,
+              color: svc.adBlockEnabled ? Colors.green : Colors.grey,
             ),
-            secondary: Icon(
-              Icons.explicit,
-              color: svc.adultFilterEnabled ? Colors.red : Colors.green,
-            ),
-            value: svc.adultFilterEnabled,
-            onChanged: (val) async {
-              if (svc.savedPassword != null) {
-                final granted = await _askForPasswordOnly(svc);
-                if (granted != true) return;
-              }
-              await svc.setAdultFilter(val);
-              if (mounted) Navigator.pop(context);
-              svc.currentTab.controller?.reload();
-            },
-          ),
-          SwitchListTile(
             title: const Text("AdBlock", style: TextStyle(color: Colors.white)),
-            secondary: const Icon(Icons.shield, color: Colors.green),
-            value: svc.adBlockEnabled,
-            onChanged: (val) async {
-              await svc.setAdBlock(val);
-              if (mounted) Navigator.pop(context);
-              svc.currentTab.controller?.reload();
+            subtitle: Text(
+              svc.adBlockEnabled
+                  ? "Włączony • może nie działać na każdej stronie i powodować problemy"
+                  : "Wyłączony",
+              style: TextStyle(
+                color: svc.adBlockEnabled ? Colors.orange : Colors.grey,
+                fontSize: 11,
+              ),
+            ),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () {
+              Navigator.pop(context);
+              _showAdBlockMenu(svc);
             },
           ),
           ListTile(
@@ -281,35 +437,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
           ),
           ListTile(
             leading: const Icon(Icons.block, color: Colors.redAccent),
-            title: const Text(
-              "Czarna lista",
-              style: TextStyle(color: Colors.white),
-            ),
+            title: const Text("Blokady", style: TextStyle(color: Colors.white)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
             onTap: () {
               Navigator.pop(context);
-              _showListEditor(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.lock_reset, color: Colors.orange),
-            title: const Text(
-              "Ustawienia hasła",
-              style: TextStyle(color: Colors.white),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              _setupPassword(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.file_present, color: Colors.orange),
-            title: const Text(
-              "Zablokowane rozszerzenia",
-              style: TextStyle(color: Colors.white),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              _showExtensionsEditor(svc);
+              _showBlockingMenu(svc);
             },
           ),
           ListTile(
@@ -323,7 +455,58 @@ class _BrowserScreenState extends State<BrowserScreen> {
               _addShortcut(svc);
             },
           ),
-
+          ListTile(
+            leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
+            title: const Text(
+              "Wyczyść dane przeglądania",
+              style: TextStyle(color: Colors.white),
+            ),
+            onTap: () async {
+              Navigator.pop(context);
+              final confirmed = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: const Color(0xFF202124),
+                  title: const Text(
+                    'Wyczyść dane',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  content: const Text(
+                    'Usuniesz ciasteczka, cache i dane stron.\nZostaniesz wylogowany ze wszystkich stron.',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text(
+                        'ANULUJ',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text(
+                        'WYCZYŚĆ',
+                        style: TextStyle(color: Colors.redAccent),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+              if (confirmed == true) {
+                await CookieManager.instance().deleteAllCookies();
+                await InAppWebViewController.clearAllCache();
+                svc.currentTab.controller?.reload();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Dane przeglądania wyczyszczone'),
+                    ),
+                  );
+                }
+              }
+            },
+          ),
           ListTile(
             leading: const Icon(Icons.info_outline, color: Colors.grey),
             title: const Text(
@@ -381,7 +564,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
                                     url_launcher.LaunchMode.externalApplication,
                               );
                             } else {
-                              // Brak aplikacji email — otwórz w WebView
                               Navigator.pop(ctx);
                               svc.currentTab.controller?.loadUrl(
                                 urlRequest: URLRequest(
@@ -429,7 +611,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
                             ),
                           ),
                         ),
-
                         const SizedBox(height: 8),
                         const Divider(color: Colors.grey),
                         const SizedBox(height: 4),
@@ -440,7 +621,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         const SizedBox(height: 4),
                         GestureDetector(
                           onTap: () {
-                            Navigator.pop(ctx); // zamknij dialog
+                            Navigator.pop(ctx);
                             svc.currentTab.controller?.loadUrl(
                               urlRequest: URLRequest(
                                 url: WebUri(
@@ -476,6 +657,102 @@ class _BrowserScreenState extends State<BrowserScreen> {
             },
           ),
           const SizedBox(height: 5),
+        ],
+      ),
+    );
+  }
+
+  void _showBlockingMenu(BrowserService svc) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF202124),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 10),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.blue),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _showSettingsMenu(svc);
+                  },
+                ),
+                const Icon(Icons.block, color: Colors.redAccent, size: 22),
+                const SizedBox(width: 8),
+                const Text(
+                  "Blokady",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: Colors.grey),
+
+          SwitchListTile(
+            title: const Text(
+              "Filtr treści (Porno/SafeSearch)",
+              style: TextStyle(color: Colors.white),
+            ),
+            secondary: Icon(
+              Icons.eighteen_up_rating_outlined,
+              color: svc.adultFilterEnabled ? Colors.red : Colors.green,
+            ),
+            value: svc.adultFilterEnabled,
+            onChanged: (val) async {
+              if (!val && svc.savedPassword != null) {
+                final granted = await _askForPasswordOnly(svc);
+                if (granted != true) return;
+              }
+              await svc.setAdultFilter(val);
+              if (mounted) Navigator.pop(context);
+              svc.currentTab.controller?.reload();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.playlist_remove, color: Colors.redAccent),
+            title: const Text(
+              "Czarna lista",
+              style: TextStyle(color: Colors.white),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              _showListEditor(svc);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.lock_reset, color: Colors.orange),
+            title: const Text(
+              "Ustawienia hasła",
+              style: TextStyle(color: Colors.white),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              _setupPassword(svc);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.file_present, color: Colors.orange),
+            title: const Text(
+              "Zablokowane pliki",
+              style: TextStyle(color: Colors.white),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              _showExtensionsEditor(svc);
+            },
+          ),
+          const SizedBox(height: 10),
         ],
       ),
     );
@@ -2047,7 +2324,6 @@ class _WebViewTabState extends State<_WebViewTab>
   double _progress = 0;
   // Dodaj zmienną stanu
   int _webViewKey = 0;
-
   int _lastAdBlockVersion = 0;
 
   void _onSvcChanged() {
@@ -2099,10 +2375,24 @@ class _WebViewTabState extends State<_WebViewTab>
           key: ValueKey(_webViewKey), // ← zamiast braku klucza
           initialUrlRequest: URLRequest(url: WebUri(tab.url)),
           initialSettings: InAppWebViewSettings(
-            contentBlockers: svc.getContentBlockers(),
+            contentBlockers: svc.isAdBlockWhitelisted(tab.url)
+                ? []
+                : svc.getContentBlockers(),
             domStorageEnabled: true,
             databaseEnabled: true,
             thirdPartyCookiesEnabled: true,
+            incognito: false,
+            clearCache: false,
+            allowsInlineMediaPlayback: true,
+            sharedCookiesEnabled: true,
+            disableDefaultErrorPage: false, // nie blokuj stron błędów
+            supportMultipleWindows: true, // wsparcie dla okien popup
+            allowFileAccess: true, // dostęp do plików
+            useWideViewPort: true,
+            loadsImagesAutomatically: true,
+            blockNetworkLoads: false, // to j
+            // Wymuś akceptowanie wszystkich cookies
+            javaScriptEnabled: true,
             allowContentAccess: true,
             javaScriptCanOpenWindowsAutomatically: true,
             userAgent:
@@ -2145,11 +2435,19 @@ class _WebViewTabState extends State<_WebViewTab>
             }
           },
           onLoadStop: (c, u) async {
+            await Future.delayed(Duration(milliseconds: 500)); // ⏳ opóźnienie
+            final cookies = await CookieManager.instance().getCookies(
+              url: WebUri('https://web.usos.agh.edu.pl'),
+            );
+            print(
+              "🍪 Cookies USOS (po opóźnieniu): ${cookies.map((c) => '${c.name}=${c.value}').join('; ')}",
+            );
             if (u != null) {
               await svc.addToHistory(await c.getTitle(), u.toString());
             }
           },
-          onLoadStart: (c, u) {
+
+          onLoadStart: (c, u) async {
             if (u != null) {
               tab.url = u.toString();
               if (svc.tabs.indexOf(tab) == svc.currentTabIndex) {
@@ -2341,11 +2639,23 @@ class _WebViewTabState extends State<_WebViewTab>
                 urlString.toLowerCase().endsWith('.pdf') ||
                 urlString.toLowerCase().contains('.pdf?');
             if (!isPdfUrl) {
-              try {
-                final headResponse = await http.head(Uri.parse(urlString));
-                final ct = headResponse.headers['content-type'] ?? '';
-                if (ct.contains('application/pdf')) isPdfUrl = true;
-              } catch (_) {}
+              final uri = Uri.tryParse(urlString);
+              final pathSegment = uri?.pathSegments.lastOrNull ?? '';
+              final looksLikeFile =
+                  pathSegment.contains('.') &&
+                  !pathSegment.endsWith('.php') &&
+                  !pathSegment.endsWith('.html') &&
+                  !pathSegment.endsWith('.htm') &&
+                  !pathSegment.endsWith('.asp') &&
+                  !pathSegment.endsWith('.aspx') &&
+                  !pathSegment.endsWith('.jsp');
+              if (looksLikeFile) {
+                try {
+                  final headResponse = await http.head(Uri.parse(urlString));
+                  final ct = headResponse.headers['content-type'] ?? '';
+                  if (ct.contains('application/pdf')) isPdfUrl = true;
+                } catch (_) {}
+              }
             }
 
             if (isPdfUrl) {

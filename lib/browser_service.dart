@@ -38,6 +38,7 @@ class BrowserService extends ChangeNotifier {
   String? savedPassword;
   bool isVerifying = false;
   bool adBlockEnabled = true;
+  List<String> adBlockWhitelist = [];
   bool adultFilterEnabled = true;
 
   DateTime? _lastAuthTime;
@@ -94,6 +95,35 @@ class BrowserService extends ChangeNotifier {
       debugPrint("🔑 Aktualne hasło: $savedPassword");
       return true;
     }());
+  }
+
+  Future<void> saveAdBlockWhitelist() async {
+    final prefs = await _getPrefs;
+    await prefs.setStringList('adblock_whitelist', adBlockWhitelist);
+  }
+
+  void addToAdBlockWhitelist(String domain) {
+    final clean = domain.toLowerCase().trim();
+    if (clean.isNotEmpty && !adBlockWhitelist.contains(clean)) {
+      adBlockWhitelist.add(clean);
+      saveAdBlockWhitelist();
+      notifyListeners();
+    }
+  }
+
+  void removeFromAdBlockWhitelist(int index) {
+    adBlockWhitelist.removeAt(index);
+    saveAdBlockWhitelist();
+    notifyListeners();
+  }
+
+  bool isAdBlockWhitelisted(String url) {
+    final uri = Uri.tryParse(url.toLowerCase());
+    if (uri == null) return false;
+    final host = uri.host;
+    return adBlockWhitelist.any(
+      (domain) => host == domain || host.endsWith('.$domain'),
+    );
   }
 
   // W BrowserService
@@ -363,6 +393,8 @@ class BrowserService extends ChangeNotifier {
     incognitoMode = p.getBool('incognito_mode') ?? false;
     blackList =
         p.getStringList('blocked_pages') ?? ["facebook.com", "instagram.com"];
+    adBlockWhitelist = p.getStringList('adblock_whitelist') ?? [];
+
     debugPrint(
       "prefs read basic: ${DateTime.now().difference(t1).inMilliseconds}ms",
     );
@@ -476,7 +508,7 @@ class BrowserService extends ChangeNotifier {
     void Function(WebUri, InAppWebViewController?) onPasswordRequired,
     void Function(String) onBlocked,
   ) {
-    print("handleNavigation: $urlString");
+    print("🔍 handleNavigation: $urlString");
     if (adultFilterEnabled &&
         urlString.contains("google.") &&
         urlString.contains("/search") &&
@@ -489,6 +521,7 @@ class BrowserService extends ChangeNotifier {
     }
 
     final reason = getBlockReason(urlString);
+    print("🔍 reason: $reason");
 
     if (reason == BlockReason.proxy) {
       onBlocked("Ta strona jest zablokowana — proxy i VPN są niedozwolone.");
@@ -731,16 +764,6 @@ class BrowserService extends ChangeNotifier {
     // Zastąp obecne trackingDomains bardziej szczegółowymi regułami:
 
     // Google Analytics
-    blockers.add(
-      ContentBlocker(
-        trigger: ContentBlockerTrigger(
-          urlFilter:
-              r".*(google-analytics\.com|googletagmanager\.com|googletagservices\.com|gtag\/js|analytics\.js|ga\.js).*",
-          resourceType: [ContentBlockerTriggerResourceType.SCRIPT],
-        ),
-        action: ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
-      ),
-    );
 
     // Hotjar
     blockers.add(
@@ -803,13 +826,13 @@ class BrowserService extends ChangeNotifier {
     blockers.add(
       ContentBlocker(
         trigger: ContentBlockerTrigger(
-          urlFilter: r".*(pixel|beacon|track|ping|telemetry|collect).*",
+          urlFilter:
+              r".*[/_-](tracking-pixel|pixel\.gif|beacon\.gif|telemetry|ping\.gif)[/_?].*",
           resourceType: [ContentBlockerTriggerResourceType.IMAGE],
         ),
         action: ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
       ),
     );
-
     return blockers;
   }
 
