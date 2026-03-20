@@ -18,25 +18,45 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "app/shortcuts"
     private var initialUrl: String? = null
 
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Obsłuż zarówno skróty myapp:// jak i zwykłe https://
+        initialUrl = extractUrl(intent)
+        android.util.Log.d("SHORTCUT", "onCreate initialUrl = $initialUrl")
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val url = intent?.data?.getQueryParameter("url")
+        val url = extractUrl(intent)
         android.util.Log.d("SHORTCUT", "onNewIntent url=$url")
         if (url != null) {
             initialUrl = url
-            // Przekaż do Fluttera jeśli engine już działa
             flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
                 MethodChannel(messenger, CHANNEL).invokeMethod("onShortcutUrl", url)
             }
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        android.util.Log.d("SHORTCUT", "onCreate intent: ${intent?.action}, data: ${intent?.data}, extras: ${intent?.extras}")
-        initialUrl = intent?.data?.getQueryParameter("url")
-        android.util.Log.d("SHORTCUT", "initialUrl = $initialUrl")
+    // Nowa pomocnicza funkcja — obsługuje oba formaty
+    private fun extractUrl(intent: Intent?): String? {
+        if (intent == null) return null
+        
+        // Format skrótu: myapp://shortcut?url=https://...
+        if (intent.data?.scheme == "myapp") {
+            return intent.data?.getQueryParameter("url")
+        }
+        
+        // Format zewnętrznego linku: ACTION_VIEW z https://
+        if (intent.action == Intent.ACTION_VIEW) {
+            val uri = intent.data
+            if (uri != null && (uri.scheme == "http" || uri.scheme == "https")) {
+                return uri.toString()
+            }
+        }
+        
+        return null
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
