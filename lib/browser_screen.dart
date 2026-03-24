@@ -6,8 +6,6 @@ import 'package:flutter/services.dart';
 import 'pdf_screen.dart';
 import 'package:flutter_custom_tabs/flutter_custom_tabs.dart';
 import 'package:http/http.dart' as http;
-import 'package:media_scanner/media_scanner.dart';
-import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
 
@@ -1637,36 +1635,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
-  Future<String?> _copyContentUriToTempFile(
-    String contentUri,
-    String fileName,
-  ) async {
-    try {
-      // Używamy natywnego mechanizmu InAppWebView do pobierania danych z content://
-      // lub standardowego podejścia przez bajty, jeśli mamy dostęp.
-      // Najbezpieczniej dla plików PDF jest użyć pomocnika:
-
-      final directory = await getTemporaryDirectory();
-      final tempFile = File('${directory.path}/$fileName');
-
-      // Używamy natywnego kanału, aby odczytać strumień z ContentResolver
-      // W Flutterze najprościej użyć paczki 'open_file' lub 'flutter_lib_phonenumber'
-      // ALE w Twoim przypadku możemy użyć zapytania do systemu przez platform channel
-      // lub sprawdzić, czy InAppWebView udostępnia dane.
-
-      // Alternatywa: Jeśli masz dostęp do bajtów przez http (nie zadziała dla content://)
-      // Dlatego musimy obsłużyć to specyficznie dla Androida.
-
-      // Prostsze rozwiązanie: użyjemy biblioteki, którą już masz lub wbudowanych narzędzi
-      // Jeśli nie chcesz dodawać paczek, musimy przechwycić to przed onDownloadStart.
-
-      return null;
-    } catch (e) {
-      print("Błąd kopiowania content:// $e");
-      return null;
-    }
-  }
-
   void _showRangeDeleteDialog(
     BuildContext sheetContext,
     BrowserService svc,
@@ -2566,9 +2534,6 @@ class _WebViewTabState extends State<_WebViewTab>
               try {
                 // Dla content:// musimy użyć zewnętrznego sposobu zapisu.
                 // Najszybsza poprawka bez nowych bibliotek:
-
-                final directory = await getTemporaryDirectory();
-                final savePath = "${directory.path}/$fileName";
 
                 // Jeśli to jest content://, musimy poprosić system o dane.
                 // UWAGA: InAppWebView automatycznie nie pobiera content:// przez http.get
