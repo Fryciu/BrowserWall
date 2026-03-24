@@ -13,15 +13,14 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.net.URLEncoder
+import android.net.Uri // <--- DODAJ TO
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "app/shortcuts"
     private var initialUrl: String? = null
 
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Obsłuż zarówno skróty myapp:// jak i zwykłe https://
         initialUrl = extractUrl(intent)
         android.util.Log.d("SHORTCUT", "onCreate initialUrl = $initialUrl")
     }
@@ -39,23 +38,26 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // Nowa pomocnicza funkcja — obsługuje oba formaty
     private fun extractUrl(intent: Intent?): String? {
         if (intent == null) return null
-        
-        // Format skrótu: myapp://shortcut?url=https://...
-        if (intent.data?.scheme == "myapp") {
-            return intent.data?.getQueryParameter("url")
+
+        val data: Uri? = intent.data
+
+        // 1. Obsługa Twoich skrótów myapp://
+        if (data?.scheme == "myapp") {
+            return data.getQueryParameter("url")
         }
-        
-        // Format zewnętrznego linku: ACTION_VIEW z https://
+
+        // 2. Obsługa zewnętrznych akcji (np. kliknięcie w PDF w folderze Pobrane)
         if (intent.action == Intent.ACTION_VIEW) {
-            val uri = intent.data
-            if (uri != null && (uri.scheme == "http" || uri.scheme == "https")) {
-                return uri.toString()
+            if (data != null) {
+                // Zwracamy pełny URI (zadziała dla http, https, file oraz content)
+                val url = data.toString()
+                android.util.Log.d("SHORTCUT", "Extracted URL from ACTION_VIEW: $url")
+                return url
             }
         }
-        
+
         return null
     }
 

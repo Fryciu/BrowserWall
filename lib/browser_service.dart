@@ -3,7 +3,8 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/foundation.dart' show setEquals;
+import 'package:flutter/foundation.dart'
+    show consolidateHttpClientResponseBytes, setEquals;
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as pathh;
 
@@ -324,33 +325,44 @@ class BrowserService extends ChangeNotifier {
     required String url,
   }) async {
     try {
-      // Pobieranie w kontekście WebView (z pełną sesją, cookies, auth)
-      final result = await controller.callAsyncJavaScript(
-        functionBody: '''
-    const response = await fetch(url, { credentials: 'include' });
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    return await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result.split(",")[1]);
-      reader.readAsDataURL(blob);
-    });
-  ''',
-        arguments: {'url': url},
-      );
+      // Pobierz cookies z WebView dla danego URL
+      final uri = Uri.tryParse(url);
+      final cookieManager = CookieManager.instance();
+      final cookies = uri != null
+          ? await cookieManager.getCookies(url: WebUri(url))
+          : <Cookie>[];
 
-      print("callAsyncJS value: ${result?.value}");
-      print("callAsyncJS error: ${result?.error}");
+      final cookieHeader = cookies
+          .map((c) => '${c.name}=${c.value}')
+          .join('; ');
 
-      if (result == null || result.error != null || result.value == null)
-        return null;
+      // Pobierz plik przez Dart http (brak ograniczeń CORS)
+      final headers = <String, String>{
+        'User-Agent':
+            'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        if (cookieHeader.isNotEmpty) 'Cookie': cookieHeader,
+      };
 
-      final base64String = result.value.toString();
-      if (base64String == 'null') return null;
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 30);
+      final request = await client.getUrl(Uri.parse(url));
+      headers.forEach((k, v) => request.headers.set(k, v));
+      request.headers.set(
+        'Access-Control-Allow-Origin',
+        '*',
+      ); // Dodaj ten nagłówek
+      final response = await request.close();
 
-      final bytes = base64Decode(base64String);
+      if (response.statusCode < 200 || response.statusCode >= 300) return null;
+
+      final bytes = await consolidateHttpClientResponseBytes(response);
+
       final dir = await getTemporaryDirectory();
-      final fileName = _parseFileName(null, url);
+      final fileName = _parseFileName(
+        response.headers.value('content-disposition'),
+        url,
+      );
       final filePath = pathh.join(dir.path, fileName);
       await File(filePath).writeAsBytes(bytes);
       return filePath;
@@ -1046,6 +1058,12 @@ class BrowserService extends ChangeNotifier {
   // ── Budowanie URL z paska adresu ─────────────
   WebUri buildTargetUrl(String input) {
     final trimmed = input.trim();
+    // Jeśli użytkownik wpisuje ścieżkę lokalną lub protokół file://
+    if (trimmed.startsWith('/') || trimmed.startsWith('file://')) {
+      return WebUri(
+        trimmed.startsWith('file://') ? trimmed : 'file://$trimmed',
+      );
+    }
     final isDomain =
         (trimmed.contains('.') && !trimmed.contains(' ')) ||
         trimmed.startsWith('http');

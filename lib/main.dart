@@ -9,6 +9,7 @@ import 'browser_screen.dart';
     Jak się uda to:
     3. Naprawa adblocka tak, żeby blokował reklamy yt
 */
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 

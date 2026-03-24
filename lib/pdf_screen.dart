@@ -21,6 +21,36 @@ class _PdfScreenState extends State<PdfScreen> {
   int totalPages = 0;
   bool isSaving = false;
 
+  String? localPath;
+  bool isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _preparePdf();
+  }
+
+  Future<void> _preparePdf() async {
+    if (widget.path.startsWith('content://')) {
+      try {
+        // Używamy platform channel do odczytania content uri
+        // Najprościej: użyj biblioteki 'open_file' lub napisz prosty MethodChannel
+        // Ale jeśli nie chcesz zmieniać wielu plików, spróbuj pobrać to jako bajty:
+
+        // Dla Androida: używamy natywnego API InAppWebView do konwersji (jeśli to możliwe)
+        // W większości przypadków wystarczy skopiować plik przez prosty plugin:
+        // np. 'flutter_file_dialog' lub 'shared_storage'
+      } catch (e) {
+        print("Error converting content uri: $e");
+      }
+    } else {
+      setState(() {
+        localPath = widget.path;
+        isLoading = false;
+      });
+    }
+  }
+
   // FUNKCJA: Zapis PDF do folderu Pobrane
   Future<void> _saveFileToPermanentStorage() async {
     setState(() => isSaving = true);

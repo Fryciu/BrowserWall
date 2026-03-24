@@ -11,10 +11,6 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
 
-// ─────────────────────────────────────────────
-//  EKRAN GŁÓWNY (tylko GUI)
-// ─────────────────────────────────────────────
-
 class BrowserScreen extends StatefulWidget {
   final String? initialUrl;
   const BrowserScreen({super.key, this.initialUrl});
@@ -36,7 +32,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final svc = context.read<BrowserService>();
       svc.addListener(_handlePendingShortcut);
-      // Sprawdź od razu przy starcie
       _handlePendingShortcut();
     });
   }
@@ -53,12 +48,33 @@ class _BrowserScreenState extends State<BrowserScreen> {
     } else {
       svc.pendingShortcutUrl = null;
       svc.addNewTab();
-      // Nowa karta załaduje URL przez onWebViewCreated
-      svc.pendingShortcutUrl = url; // ustaw z powrotem dla onWebViewCreated
+      svc.pendingShortcutUrl = url;
     }
   }
 
   @override
+  /// Called when this object is about to be removed from the tree.
+  ///
+  /// This is where you should release any resources your object is using.
+  /// For example, if your object has a reference to a network connection,
+  /// or if it is maintaining a large in-memory data structure, you should
+  /// release that connection or data structure here.
+  ///
+  /// You should also call [super.dispose] to complete the dispose.
+  /// In general, it is recommended that you implement [dispose] to
+  /// break any circular references your object has with other objects, and
+  /// to release any resources your object is using that are not being used by
+  /// other objects.
+  ///
+  /// If you subclass this class, make sure to include a call to
+  /// [super.dispose] when you override [dispose].
+  ///
+  /// This method should not be used to dispose any resources that are being
+  /// used by other objects. Instead, the resources should be released when they
+  /// are no longer needed, which is usually (but not always) in the
+  /// [dispose] method.
+  ///
+  /// See also: [WidgetsBinding.dispose]], and [State.dispose].
   void dispose() {
     context.read<BrowserService>().removeListener(_handlePendingShortcut);
     urlFocusNode.dispose();
@@ -66,13 +82,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
     super.dispose();
   }
 
-  // ── Dialogi uwierzytelniania ─────────────────
-
   void _showPasswordDialog(
     BrowserService svc,
     WebUri url,
     InAppWebViewController? controller,
   ) {
+    //controller?.loadUrl(urlRequest: URLRequest(url: url));
+    //return;
     if (svc.canSkipAuth(url.toString())) {
       controller?.loadUrl(urlRequest: URLRequest(url: url));
       return;
@@ -136,11 +152,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   static const _channel = MethodChannel('app/shortcuts');
 
+  /// Shows a dialog asking for a shortcut name, and saves the shortcut to shared preferences
+  /// if the user confirms. If the user cancels the dialog, does nothing.
+  /// If the user enters an empty name, does nothing.
+  /// If an error occurs while saving the shortcut, shows a snackbar with an error message.
   Future<void> _addShortcut(BrowserService svc) async {
     final currentUrl = svc.currentTab.url;
     String name = svc.currentTab.title;
-
-    // Dialog z nazwą
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -193,6 +211,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
+  /// Shows a dialog asking for a password to access a website.
+  ///
+  /// Returns `true` if the user enters a correct password, and `false` otherwise.
+  ///
+  /// If the user cancels the dialog, `null` is returned.
   Future<bool?> _askForPasswordOnly(BrowserService svc) {
     String entered = "";
     return showDialog<bool>(
@@ -389,8 +412,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
       ),
     );
   }
-
-  // ── Ustawienia ───────────────────────────────
 
   void _showSettingsMenu(BrowserService svc) {
     showModalBottomSheet(
@@ -1616,6 +1637,36 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
+  Future<String?> _copyContentUriToTempFile(
+    String contentUri,
+    String fileName,
+  ) async {
+    try {
+      // Używamy natywnego mechanizmu InAppWebView do pobierania danych z content://
+      // lub standardowego podejścia przez bajty, jeśli mamy dostęp.
+      // Najbezpieczniej dla plików PDF jest użyć pomocnika:
+
+      final directory = await getTemporaryDirectory();
+      final tempFile = File('${directory.path}/$fileName');
+
+      // Używamy natywnego kanału, aby odczytać strumień z ContentResolver
+      // W Flutterze najprościej użyć paczki 'open_file' lub 'flutter_lib_phonenumber'
+      // ALE w Twoim przypadku możemy użyć zapytania do systemu przez platform channel
+      // lub sprawdzić, czy InAppWebView udostępnia dane.
+
+      // Alternatywa: Jeśli masz dostęp do bajtów przez http (nie zadziała dla content://)
+      // Dlatego musimy obsłużyć to specyficznie dla Androida.
+
+      // Prostsze rozwiązanie: użyjemy biblioteki, którą już masz lub wbudowanych narzędzi
+      // Jeśli nie chcesz dodawać paczek, musimy przechwycić to przed onDownloadStart.
+
+      return null;
+    } catch (e) {
+      print("Błąd kopiowania content:// $e");
+      return null;
+    }
+  }
+
   void _showRangeDeleteDialog(
     BuildContext sheetContext,
     BrowserService svc,
@@ -2157,7 +2208,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           tab: tab,
                           svc: svc,
                           urlController: urlController,
-                          onPasswordRequired: _showPasswordDialog,
+                          onPasswordRequired:
+                              _showPasswordDialog, //TODO odkomentować
                         ),
                       )
                       .toList(),
@@ -2334,6 +2386,17 @@ class _WebViewTabState extends State<_WebViewTab>
     }
   }
 
+  Future<String> _getCookiesForUrl(String urlString) async {
+    try {
+      final cookies = await CookieManager.instance().getCookies(
+        url: WebUri(urlString),
+      );
+      return cookies.map((c) => '${c.name}=${c.value}').join('; ');
+    } catch (_) {
+      return '';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2412,6 +2475,22 @@ class _WebViewTabState extends State<_WebViewTab>
               action: PermissionResponseAction.GRANT,
             );
           },
+          onCreateWindow: (controller, createWindowAction) async {
+            // Pobierz URL z akcji window.open
+            final url = createWindowAction.request.url;
+            if (url != null) {
+              // Załaduj ten URL w obecnej karcie zamiast otwierać nowe okno
+              controller.loadUrl(urlRequest: URLRequest(url: url));
+            }
+            return true;
+          },
+          onCloseWindow: (controller) async {
+            if (widget.svc.tabs.length > 1) {
+              final index = widget.svc.tabs.indexOf(tab);
+              widget.svc.closeTab(index);
+            }
+            return; // lub usuń return
+          },
 
           onProgressChanged: (controller, progress) {
             if (mounted) setState(() => _progress = progress / 100);
@@ -2435,165 +2514,132 @@ class _WebViewTabState extends State<_WebViewTab>
             }
           },
           onLoadStop: (c, u) async {
-            await Future.delayed(Duration(milliseconds: 500)); // ⏳ opóźnienie
-            final cookies = await CookieManager.instance().getCookies(
-              url: WebUri('https://web.usos.agh.edu.pl'),
-            );
-            print(
-              "🍪 Cookies USOS (po opóźnieniu): ${cookies.map((c) => '${c.name}=${c.value}').join('; ')}",
-            );
+            await Future.delayed(Duration(milliseconds: 500));
             if (u != null) {
               await svc.addToHistory(await c.getTitle(), u.toString());
-            }
+            } // ⏳ opóźnienie
           },
 
-          onLoadStart: (c, u) async {
-            if (u != null) {
-              tab.url = u.toString();
-              if (svc.tabs.indexOf(tab) == svc.currentTabIndex) {
-                widget.urlController.text = u.toString();
-              }
-              svc.saveTabs();
-            }
-          },
+          onLoadStart: (controller, url) async {
+            if (url == null) return;
+            final urlString = url.toString();
 
-          onDownloadStartRequest: (controller, downloadStartRequest) async {
-            final url = downloadStartRequest.url.toString();
-            print("onDownloadStart: $url");
-            print("mimeType: ${downloadStartRequest.mimeType}");
+            // Sprawdź czy to plik lokalny i czy to PDF
+            if (urlString.startsWith("file://") &&
+                urlString.toLowerCase().endsWith(".pdf")) {
+              // Zatrzymaj ładowanie w WebView, bo ono nie obsłuży PDF lokalnie
+              await controller.stopLoading();
 
-            // Sprawdź blokadę rozszerzeń
-            if (widget.svc.isExtensionBlocked(url)) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text("Pobieranie tego typu pliku jest zablokowane."),
-                  backgroundColor: Colors.redAccent,
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-              return;
-            }
+              // Wyciągnij czystą ścieżkę do pliku
+              final filePath = url.toFilePath();
+              final fileName = url.pathSegments.isNotEmpty
+                  ? url.pathSegments.last
+                  : "Dokument PDF";
 
-            // PDF
-            bool isPdf =
-                url.toLowerCase().endsWith('.pdf') ||
-                url.toLowerCase().contains('.pdf?') ||
-                (downloadStartRequest.mimeType == 'application/pdf');
-
-            if (isPdf) {
-              final path = await widget.svc.downloadFileFromWebView(
-                controller: controller,
-                url: url,
-              );
-              if (path != null && mounted) {
-                await Navigator.push(
+              if (mounted) {
+                // Przejdź do Twojego ekranu PDF
+                Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => PdfScreen(
-                      path: path,
-                      title: url.split('/').last.split('?').first,
-                    ),
+                    builder: (context) =>
+                        PdfScreen(path: filePath, title: fileName),
                   ),
                 );
               }
               return;
             }
+          },
 
-            // Inne pliki (doc, xlsx, zip itd.)
-            if (!widget.svc.downloadEnabled) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text("Pobieranie plików jest wyłączone."),
-                  backgroundColor: Colors.orange,
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-              return;
-            }
+          onDownloadStartRequest: (controller, downloadRequest) async {
+            final urlString = downloadRequest.url.toString();
+            print("onDownloadStart: $urlString");
 
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text("Pobieranie pliku..."),
-                duration: Duration(seconds: 10),
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-
-            final tempPath = await widget.svc.downloadFileFromWebView(
-              controller: controller,
-              url: url,
-            );
-
-            if (mounted) ScaffoldMessenger.of(context).hideCurrentSnackBar();
-
-            if (tempPath == null) {
-              if (mounted)
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("Błąd pobierania pliku."),
-                    backgroundColor: Colors.redAccent,
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              return;
-            }
-
-            // Zapisz do folderu Pobrane
-            try {
-              final sourceFile = File(tempPath);
-              const possiblePaths = [
-                '/storage/emulated/0/Download',
-                '/sdcard/Download',
-              ];
-
-              Directory? downloadDir;
-              for (final p in possiblePaths) {
-                final d = Directory(p);
-                if (await d.exists()) {
-                  downloadDir = d;
-                  break;
-                }
+            if (urlString.startsWith("content://") ||
+                urlString.toLowerCase().endsWith(".pdf")) {
+              // 1. Wyciągnij nazwę pliku
+              String fileName =
+                  "dokument_${DateTime.now().millisecondsSinceEpoch}.pdf";
+              if (downloadRequest.suggestedFilename != null) {
+                fileName = downloadRequest.suggestedFilename!;
               }
-              downloadDir ??= await getApplicationDocumentsDirectory();
 
-              final fileName = url.split('/').last.split('?').first;
-              final destPath = '${downloadDir.path}/$fileName';
-              await sourceFile.copy(destPath);
+              try {
+                // Dla content:// musimy użyć zewnętrznego sposobu zapisu.
+                // Najszybsza poprawka bez nowych bibliotek:
 
-              // Zeskanuj plik żeby pojawił się w galerii/menedżerze plików
-              await MediaScanner.loadMedia(path: destPath);
+                final directory = await getTemporaryDirectory();
+                final savePath = "${directory.path}/$fileName";
 
-              if (mounted)
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Row(
-                      children: [
-                        const Icon(Icons.check_circle, color: Colors.white),
-                        const SizedBox(width: 12),
-                        Expanded(child: Text('Zapisano: $fileName')),
-                      ],
+                // Jeśli to jest content://, musimy poprosić system o dane.
+                // UWAGA: InAppWebView automatycznie nie pobiera content:// przez http.get
+
+                // Proponowane rozwiązanie: użyj NavigationAction zamiast DownloadStart dla takich linków
+                // lub użyj paczki 'flutter_cache_manager' / 'dio'.
+
+                // Jeśli chcesz tylko otworzyć ten PDF w swoim PdfScreen:
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => PdfScreen(
+                      path: urlString, // Przekaż URI
+                      title: fileName,
                     ),
-                    backgroundColor: Colors.green.shade700,
-                    behavior: SnackBarBehavior.floating,
-                    duration: const Duration(seconds: 4),
                   ),
                 );
-            } catch (e) {
-              print("Błąd zapisu: $e");
-              if (mounted)
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("Błąd zapisu pliku."),
-                    backgroundColor: Colors.redAccent,
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
+              } catch (e) {
+                print("Błąd PDF: $e");
+              }
             }
           },
           shouldOverrideUrlLoading: (c, act) async {
-            final u = act.request.url;
-            if (u == null) return NavigationActionPolicy.ALLOW;
-            final urlString = u.toString();
+            final url = act.request.url;
+            if (url == null) return NavigationActionPolicy.ALLOW;
+
+            final urlString = url.toString();
+
+            // Sprawdzamy czy to plik lokalny kończący się na .pdf
+            if (urlString.startsWith('file://') &&
+                urlString.toLowerCase().endsWith('.pdf')) {
+              final localPath = url
+                  .toFilePath(); // Konwertuje file://... na zwykłą ścieżkę /...
+
+              if (await File(localPath).exists()) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => PdfScreen(
+                      path: localPath,
+                      title: localPath
+                          .split('/')
+                          .last, // Nazwa pliku jako tytuł
+                    ),
+                  ),
+                );
+                return NavigationActionPolicy
+                    .CANCEL; // Blokujemy ładowanie w samym WebView
+              }
+            }
+            if (urlString.startsWith('file://') &&
+                urlString.toLowerCase().endsWith('.pdf')) {
+              final localPath = url
+                  .toFilePath(); // Konwertuje file://... na zwykłą ścieżkę /...
+
+              if (await File(localPath).exists()) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => PdfScreen(
+                      path: localPath,
+                      title: localPath
+                          .split('/')
+                          .last, // Nazwa pliku jako tytuł
+                    ),
+                  ),
+                );
+                return NavigationActionPolicy
+                    .CANCEL; // Blokujemy ładowanie w samym WebView
+              }
+            }
 
             if (urlString.startsWith('intent://')) {
               if (urlString.contains('play.google.com')) {
@@ -2641,19 +2687,53 @@ class _WebViewTabState extends State<_WebViewTab>
             if (!isPdfUrl) {
               final uri = Uri.tryParse(urlString);
               final pathSegment = uri?.pathSegments.lastOrNull ?? '';
-              final looksLikeFile =
-                  pathSegment.contains('.') &&
-                  !pathSegment.endsWith('.php') &&
-                  !pathSegment.endsWith('.html') &&
-                  !pathSegment.endsWith('.htm') &&
-                  !pathSegment.endsWith('.asp') &&
-                  !pathSegment.endsWith('.aspx') &&
-                  !pathSegment.endsWith('.jsp');
-              if (looksLikeFile) {
+              final skipExtensions = {
+                '.html',
+                '.htm',
+                '.aspx',
+                '.js',
+                '.css',
+                '.png',
+                '.jpg',
+                '.jpeg',
+                '.gif',
+                '.svg',
+                '.ico',
+                '.woff',
+                '.ttf',
+              };
+              final ext = pathSegment.contains('.')
+                  ? '.${pathSegment.split('.').last.toLowerCase()}'
+                  : '';
+              final shouldProbe = !skipExtensions.contains(ext);
+              if (shouldProbe) {
                 try {
-                  final headResponse = await http.head(Uri.parse(urlString));
+                  final cookieStr = await _getCookiesForUrl(urlString);
+                  final headHeaders = <String, String>{};
+                  if (cookieStr.isNotEmpty) headHeaders['Cookie'] = cookieStr;
+                  final headResponse = await http
+                      .head(Uri.parse(urlString), headers: headHeaders)
+                      .timeout(const Duration(seconds: 5));
                   final ct = headResponse.headers['content-type'] ?? '';
-                  if (ct.contains('application/pdf')) isPdfUrl = true;
+
+                  if (ct.contains('application/pdf')) {
+                    isPdfUrl = true;
+                  } else {
+                    // ZAWSZE sprawdzaj magic bytes dla URL-i które mogą zwracać pliki
+                    final getHeaders = <String, String>{'Range': 'bytes=0-3'};
+                    if (cookieStr.isNotEmpty) getHeaders['Cookie'] = cookieStr;
+                    final getResponse = await http
+                        .get(Uri.parse(urlString), headers: getHeaders)
+                        .timeout(const Duration(seconds: 8));
+                    final body = getResponse.bodyBytes;
+                    if (body.length >= 4 &&
+                        body[0] == 0x25 &&
+                        body[1] == 0x50 &&
+                        body[2] == 0x44 &&
+                        body[3] == 0x46) {
+                      isPdfUrl = true;
+                    }
+                  }
                 } catch (_) {}
               }
             }
