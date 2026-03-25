@@ -48,6 +48,7 @@ dependencies:
   media_scanner: ^2.0.0
   flutter_custom_tabs: ^2.0.0
   url_launcher: ^6.2.0
+  mobile_scanner: ^5.2.3
 
 dev_dependencies:
   flutter_test:

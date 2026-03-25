@@ -46,15 +46,30 @@ class BrowserService extends ChangeNotifier {
   String? _lastAuthUrl;
 
   final List<String> pornKeywords = [
-    "porn",
-    "xxx",
-    "hentai",
-    "redtube",
-    "pornhub",
-    "rule34",
-    "xvideos",
-    "brazzers",
-    "sex-video",
+    // Ogólne
+    "porn", "xxx", "nsfw", "erotic", "adult-content",
+    // Hentai / anime
+    "hentai", "ecchi", "doujin", "lolicon", "shotacon", "yaoi", "yuri",
+    // Znane serwisy
+    "redtube", "pornhub", "rule34", "xvideos", "brazzers", "sex-video",
+    "xhamster", "xnxx", "spankbang", "youporn", "tube8", "tnaflix",
+    "beeg", "xtube", "eporner", "faphouse", "porntrex", "slutload",
+    "thumbzilla",
+    // Slang / kategorie
+    "milf", "dilf", "gilf", "cougar",
+    "creampie", "gangbang", "bdsm", "fetish",
+    "onlyfans", "camgirl", "camboy",
+    "livejasmin", "chaturbate", "stripchat", "bongacams", "myfreecams",
+    "nude", "nudist", "nudes",
+    "blowjob", "handjob", "footjob", "cumshot", "orgasm",
+    "masturbat", "dildo", "vibrator",
+    "sexshop", "sexcam", "sexchat",
+    "hookup", "swingers", "threesome", "foursome",
+    "incest", "taboo", "fisting", "squirt",
+    "porno", "sexfilm", "sexvideo",
+    "stripping", "striptease",
+    "shemale", "tranny", "femdom", "pegging",
+    "r34",
   ];
 
   // ── Gettery wygodne ──────────────────────────
@@ -496,20 +511,45 @@ class BrowserService extends ChangeNotifier {
   }
 
   BlockReason getBlockReason(String urlString) {
-    final lowerUrl = urlString.toLowerCase();
-    final uri = Uri.tryParse(lowerUrl);
+    if (urlString.isEmpty) return BlockReason.none;
 
-    if (_isProxyOrVpnUrl(urlString)) return BlockReason.proxy;
+    final lowerUrl = urlString.toLowerCase().trim();
 
-    if (adultFilterEnabled) {
-      if (uri != null && remoteBlockedDomains.contains(uri.host))
-        return BlockReason.content;
-      if (pornKeywords.any((word) => lowerUrl.contains(word)))
-        return BlockReason.content;
+    // 1. Normalizacja URL (wymagana, aby Uri.host zadziałało)
+    String normalizedUrl = lowerUrl;
+    if (!lowerUrl.startsWith('http://') && !lowerUrl.startsWith('https://')) {
+      normalizedUrl = 'https://$lowerUrl';
     }
 
-    if (blackList.any((s) => lowerUrl.contains(s.toLowerCase())))
+    final uri = Uri.tryParse(normalizedUrl);
+    // Jeśli uri jest nullem, używamy surowego tekstu, ale host jest kluczowy
+    final host = uri?.host ?? lowerUrl;
+
+    // 2. Blokada Proxy / VPN
+    if (_isProxyOrVpnUrl(normalizedUrl)) return BlockReason.proxy;
+
+    // 3. Filtr treści dla dorosłych
+    if (adultFilterEnabled) {
+      // Sprawdzenie pełnego hosta w pobranych listach (np. "pornhub.com")
+      if (remoteBlockedDomains.contains(host)) {
+        return BlockReason.content;
+      }
+
+      // Sprawdzenie, czy host zawiera zakazane słowo (np. "hardnsfw.com" zawiera "nsfw")
+      // Używamy 'host', a nie 'lowerUrl', żeby uniknąć blokowania np. wyników wyszukiwania
+      // w Google, które tylko wyświetlają te słowa w tytule.
+      if (pornKeywords.any((word) => host.contains(word))) {
+        return BlockReason.content;
+      }
+    }
+
+    // 4. Twoja prywatna czarna lista
+    if (blackList.any(
+      (s) =>
+          host.contains(s.toLowerCase()) || lowerUrl.contains(s.toLowerCase()),
+    )) {
       return BlockReason.blacklist;
+    }
 
     return BlockReason.none;
   }
@@ -521,17 +561,8 @@ class BrowserService extends ChangeNotifier {
     void Function(String) onBlocked,
   ) {
     print("🔍 handleNavigation: $urlString");
-    if (adultFilterEnabled &&
-        urlString.contains("google.") &&
-        urlString.contains("/search") &&
-        !urlString.contains("safe=active")) {
-      final sep = urlString.contains("?") ? "&" : "?";
-      controller.loadUrl(
-        urlRequest: URLRequest(url: WebUri("$urlString${sep}safe=active")),
-      );
-      return true;
-    }
 
+    // Najpierw sprawdź słowa kluczowe — nawet w zapytaniach Google
     final reason = getBlockReason(urlString);
     print("🔍 reason: $reason");
 
@@ -549,6 +580,18 @@ class BrowserService extends ChangeNotifier {
       } else {
         onBlocked("Ta strona jest zablokowana.");
       }
+      return true;
+    }
+
+    // SafeSearch — tylko gdy URL jest czysty (brak słów kluczowych)
+    if (adultFilterEnabled &&
+        urlString.contains("google.") &&
+        urlString.contains("/search") &&
+        !urlString.contains("safe=active")) {
+      final sep = urlString.contains("?") ? "&" : "?";
+      controller.loadUrl(
+        urlRequest: URLRequest(url: WebUri("$urlString${sep}safe=active")),
+      );
       return true;
     }
 
