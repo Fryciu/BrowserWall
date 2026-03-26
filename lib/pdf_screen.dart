@@ -207,7 +207,7 @@ class _PdfScreenState extends State<PdfScreen> {
 
     int counter = 1;
     while (true) {
-      final newName = '${nameWithoutExt} ($counter)$extension';
+      final newName = '$nameWithoutExt ($counter)$extension';
       final newPath = p.join(directory, newName);
       if (!await File(newPath).exists()) {
         return newPath;

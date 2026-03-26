@@ -1691,7 +1691,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                         value: useTimeFilter,
                         onChanged: (v) =>
                             setDialogState(() => useTimeFilter = v),
-                        activeColor: Colors.blue,
+                        activeThumbColor: Colors.blue,
                       ),
                     ],
                   ),

@@ -92,7 +92,7 @@ class _WebViewTabState extends State<WebViewTab>
       children: [
         InAppWebView(
           key: ValueKey(_webViewKey),
-          initialUrlRequest: URLRequest(url: WebUri(tab.url)),
+          initialUrlRequest: URLRequest(url: WebUri("about:blank")),
           initialSettings: InAppWebViewSettings(
             contentBlockers: svc.isAdBlockWhitelisted(tab.url)
                 ? []
@@ -148,14 +148,41 @@ class _WebViewTabState extends State<WebViewTab>
           },
           onWebViewCreated: (c) {
             tab.controller = c;
-            if (svc.pendingShortcutUrl != null &&
-                svc.tabs.indexOf(tab) == svc.currentTabIndex) {
-              final url = svc.pendingShortcutUrl!;
-              svc.pendingShortcutUrl = null;
-              Future.microtask(
-                () => c.loadUrl(urlRequest: URLRequest(url: WebUri(url))),
+
+            // Załaduj URL ręcznie (nie przez initialUrlRequest), żeby
+            // handleNavigation zdążyło sprawdzić blokadę przed załadowaniem.
+            // shouldOverrideUrlLoading NIE odpala się dla initialUrlRequest.
+
+            Future.microtask(() {
+              print("🚀 onWebViewCreated urlToLoad: ${tab.url}"); // ← dodaj
+              String urlToLoad = tab.url;
+              if (svc.pendingShortcutUrl != null &&
+                  svc.tabs.indexOf(tab) == svc.currentTabIndex) {
+                urlToLoad = svc.pendingShortcutUrl!;
+                svc.pendingShortcutUrl = null;
+              }
+
+              final blocked = svc.handleNavigation(
+                urlToLoad,
+                c,
+                (url, ctrl) => widget.onPasswordRequired(svc, url, ctrl),
+                (message) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(message),
+                        backgroundColor: Colors.redAccent,
+                      ),
+                    );
+                  }
+                },
               );
-            }
+              print("🚀 blocked: $blocked"); // ← dodaj
+
+              if (!blocked) {
+                c.loadUrl(urlRequest: URLRequest(url: WebUri(urlToLoad)));
+              }
+            });
           },
           onTitleChanged: (c, t) {
             if (mounted) {
@@ -173,21 +200,10 @@ class _WebViewTabState extends State<WebViewTab>
             if (url == null) return;
             final urlString = url.toString();
 
-            final blocked = svc.handleNavigation(
-              urlString,
-              controller,
-              (url, ctrl) => widget.onPasswordRequired(svc, url, ctrl),
-              (message) => ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(message),
-                  backgroundColor: Colors.redAccent,
-                ),
-              ),
-            );
-            if (blocked) {
-              await controller.stopLoading();
-              return;
-            }
+            // Uwaga: blokowanie przez handleNavigation (pornKeywords, blacklist, proxy)
+            // jest obsługiwane w shouldOverrideUrlLoading, który odpala się PRZED
+            // załadowaniem strony. onLoadStart odpala się już PO wysłaniu requesta,
+            // dlatego blokowanie tu jest za późne i zostało przeniesione wyżej.
 
             if (urlString.startsWith("file://") &&
                 urlString.toLowerCase().endsWith(".pdf")) {

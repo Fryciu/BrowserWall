@@ -51,22 +51,21 @@ class BrowserService extends ChangeNotifier {
     // Hentai / anime
     "hentai", "ecchi", "doujin", "lolicon", "shotacon", "yaoi", "yuri",
     // Znane serwisy
-    "redtube", "pornhub", "rule34", "xvideos", "brazzers", "sex-video",
-    "xhamster", "xnxx", "spankbang", "youporn", "tube8", "tnaflix",
-    "beeg", "xtube", "eporner", "faphouse", "porntrex", "slutload",
+    "redtube", "rule34", "xvideos", "brazzers", "sex-video",
+    "xhamster", "xnxx", "spankbang", "tube8", "tnaflix",
+    "beeg", "xtube", "faphouse", "slutload",
     "thumbzilla",
     // Slang / kategorie
     "milf", "dilf", "gilf", "cougar",
     "creampie", "gangbang", "bdsm", "fetish",
     "onlyfans", "camgirl", "camboy",
     "livejasmin", "chaturbate", "stripchat", "bongacams", "myfreecams",
-    "nude", "nudist", "nudes",
-    "blowjob", "handjob", "footjob", "cumshot", "orgasm",
+    "nude", "nudist",
+    "blowjob", "handjob", "footjob", "cum", "orgasm",
     "masturbat", "dildo", "vibrator",
-    "sexshop", "sexcam", "sexchat",
+    "sex",
     "hookup", "swingers", "threesome", "foursome",
     "incest", "taboo", "fisting", "squirt",
-    "porno", "sexfilm", "sexvideo",
     "stripping", "striptease",
     "shemale", "tranny", "femdom", "pegging",
     "r34",
@@ -289,6 +288,24 @@ class BrowserService extends ChangeNotifier {
     return getBlockReason(url) != BlockReason.none;
   }
 
+  // Dodaj to do klasy BrowserService
+
+  /// Zwraca true, jeśli nawigacja powinna zostać przerwana (strona zablokowana)
+  bool shouldBlockRequest(String url) {
+    final reason = getBlockReason(url);
+
+    // Jeśli to proxy - blokuj zawsze
+    if (reason == BlockReason.proxy) return true;
+
+    // Jeśli to pornografia lub blacklist - blokuj, chyba że mamy aktywną sesję auth
+    if (reason == BlockReason.content || reason == BlockReason.blacklist) {
+      if (canSkipAuth(url)) return false; // Sesja jeszcze trwa, pozwól wejść
+      return true; // Wymaga hasła lub całkowita blokada
+    }
+
+    return false;
+  }
+
   Future<void> removeHistoryEntries(List<Map<String, String>> entries) async {
     history.removeWhere((e) => entries.contains(e));
     final prefs = await _getPrefs;
@@ -473,8 +490,9 @@ class BrowserService extends ChangeNotifier {
     final uri = Uri.tryParse(lowerUrl);
 
     if (uri != null && remoteBlockedProxy.contains(uri.host)) return true;
-    if (remoteBlockedProxy.any((domain) => lowerUrl.contains(domain)))
+    if (remoteBlockedProxy.any((domain) => lowerUrl.contains(domain))) {
       return true;
+    }
 
     const keywords = [
       "proxy",
@@ -511,6 +529,7 @@ class BrowserService extends ChangeNotifier {
   }
 
   BlockReason getBlockReason(String urlString) {
+    print("Jestem tuuuuu1");
     if (urlString.isEmpty) return BlockReason.none;
 
     final lowerUrl = urlString.toLowerCase().trim();
@@ -530,6 +549,7 @@ class BrowserService extends ChangeNotifier {
 
     // 3. Filtr treści dla dorosłych
     if (adultFilterEnabled) {
+      print("Jestem tuuuuu2");
       // Sprawdzenie pełnego hosta w pobranych listach (np. "pornhub.com")
       if (remoteBlockedDomains.contains(host)) {
         return BlockReason.content;
@@ -538,8 +558,11 @@ class BrowserService extends ChangeNotifier {
       // Sprawdzenie, czy host zawiera zakazane słowo (np. "hardnsfw.com" zawiera "nsfw")
       // Używamy 'host', a nie 'lowerUrl', żeby uniknąć blokowania np. wyników wyszukiwania
       // w Google, które tylko wyświetlają te słowa w tytule.
-      if (pornKeywords.any((word) => host.contains(word))) {
-        return BlockReason.content;
+      for (final word in pornKeywords) {
+        print("Jestem tuuuuu3");
+        if (lowerUrl.contains(word.toLowerCase())) {
+          return BlockReason.content;
+        }
       }
     }
 
@@ -584,15 +607,12 @@ class BrowserService extends ChangeNotifier {
     }
 
     // SafeSearch — tylko gdy URL jest czysty (brak słów kluczowych)
-    if (adultFilterEnabled &&
-        urlString.contains("google.") &&
-        urlString.contains("/search") &&
-        !urlString.contains("safe=active")) {
-      final sep = urlString.contains("?") ? "&" : "?";
-      controller.loadUrl(
-        urlRequest: URLRequest(url: WebUri("$urlString${sep}safe=active")),
-      );
-      return true;
+    if (adultFilterEnabled) {
+      final safeUrl = _applySafeSearch(urlString);
+      if (safeUrl != null) {
+        controller.loadUrl(urlRequest: URLRequest(url: WebUri(safeUrl)));
+        return true;
+      }
     }
 
     return false;
@@ -626,6 +646,41 @@ class BrowserService extends ChangeNotifier {
   void recordAuth(String urlString) {
     _lastAuthTime = DateTime.now();
     _lastAuthUrl = urlString;
+  }
+
+  /// Zwraca zmodyfikowany URL z wymuszonym SafeSearch, lub null jeśli nic nie trzeba zmieniać.
+  String? _applySafeSearch(String urlString) {
+    final lower = urlString.toLowerCase();
+
+    // Pary: [fragment hosta, parametr do sprawdzenia, parametr do dodania]
+    const rules = [
+      // Google
+      ('google.', '/search', 'safe=active', 'safe=active'),
+      // Bing
+      ('bing.com', '/search', 'adlt=strict', 'adlt=strict'),
+      // DuckDuckGo
+      ('duckduckgo.com', '?q=', 'kp=1', 'kp=1'),
+      // Yahoo
+      ('search.yahoo.com', '/search', 'vm=r', 'vm=r'),
+      // Brave Search
+      ('search.brave.com', '/search', 'safesearch=strict', 'safesearch=strict'),
+      // Ecosia
+      ('ecosia.org', '/search', 'safesearch=strict', 'safesearch=strict'),
+      // Startpage
+      ('startpage.com', '/search', 'safe=1', 'safe=1'),
+    ];
+
+    for (final (host, path, checkParam, addParam) in rules) {
+      if (lower.contains(host) && lower.contains(path)) {
+        if (!lower.contains(checkParam)) {
+          final sep = urlString.contains('?') ? '&' : '?';
+          return '$urlString$sep$addParam';
+        }
+        return null; // już ma SafeSearch, nic nie rób
+      }
+    }
+
+    return null; // nie rozpoznana wyszukiwarka
   }
 
   bool verifyPassword(String entered) {
@@ -987,8 +1042,9 @@ class BrowserService extends ChangeNotifier {
         url.contains("safe=active") ||
         url == "https://www.google.com/" ||
         url.startsWith("https://www.google.com/#") ||
-        incognitoMode)
+        incognitoMode) {
       return;
+    }
 
     String displayTitle = title ?? url;
 

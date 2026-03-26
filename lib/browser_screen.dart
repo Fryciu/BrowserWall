@@ -271,9 +271,28 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 },
                                 onSubmitted: (v) {
                                   final targetUrl = svc.buildTargetUrl(v);
-                                  svc.currentTab.controller?.loadUrl(
-                                    urlRequest: URLRequest(url: targetUrl),
+                                  final targetUrlString = targetUrl.toString();
+
+                                  final blocked = svc.handleNavigation(
+                                    targetUrlString,
+                                    svc.currentTab.controller!,
+                                    (url, ctrl) =>
+                                        showPasswordDialog(svc, url, ctrl),
+                                    (message) => ScaffoldMessenger.of(context)
+                                        .showSnackBar(
+                                          SnackBar(
+                                            content: Text(message),
+                                            backgroundColor: Colors.redAccent,
+                                            behavior: SnackBarBehavior.floating,
+                                          ),
+                                        ),
                                   );
+
+                                  if (!blocked) {
+                                    svc.currentTab.controller?.loadUrl(
+                                      urlRequest: URLRequest(url: targetUrl),
+                                    );
+                                  }
                                 },
                               ),
                             ),
