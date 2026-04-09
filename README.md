@@ -1,21 +1,45 @@
 # BrowserWall
-Pierwsza przeglądarka stawiająca na walkę z rozpraszaczami
 
-## Bezpieczeństwo i Filtrowanie
-Filtr Treści (SafeSearch): Wbudowany mechanizm blokowania treści dla dorosłych, idealny do pracy w skupieniu lub jako kontrola rodzicielska.
+[![Flutter](https://img.shields.io/badge/Platform-Flutter-02569B?logo=flutter)](https://flutter.dev)
+[![Dart](https://img.shields.io/badge/Language-Dart-0175C2?logo=dart)](https://dart.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-AdBlock: Zintegrowana ochrona przed uciążliwymi reklamami i trackerami, co przyspiesza ładowanie stron i oszczędza transfer danych.
+The first web browser dedicated to eliminating digital distractions.
 
-Czarna Lista (Blacklist): Możliwość ręcznego blokowania wybranych domen, aby uniknąć rozpraszaczy.
+## 🛡️ Security & Filtering
+Content Filter (SafeSearch): Built-in mechanism to block adult content, designed to maintain focus during deep work or serve as a robust parental control tool.
 
-## Prywatność i Kontrola
-Ochrona Hasłem: Możliwość zabezpieczenia ustawień filtrowania hasłem, co zapobiega nieautoryzowanym zmianom w konfiguracji.
+Integrated AdBlock: I would like to write in a fancy way that this works like a charm, it really doesn't. It crashes redirects of some websites somehow.
 
-Zablokowane Rozszerzenia: Kontrola nad tym, jakie dodatki mogą być uruchamiane wewnątrz przeglądarki.
+Domain Blacklist: Custom blocking of specific domains or keywords to prevent access to distracting websites.
 
-Zarządzanie Historią: Szybki dostęp do historii przeglądania z opcją jej czyszczenia.
+## 🔐 Privacy & Control
+Password Protection: Secure your filtering settings with a password to prevent unauthorized configuration changes.
 
-## User Experience
-Skróty na Ekranie Głównym: Szybki dostęp do ulubionych witryn bezpośrednio z pulpitu urządzenia.
+History Management: Streamlined access to browsing history with quick-clear options to maintain privacy.
 
-Intuicyjne Menu Ustawień: Wszystkie opcje filtrowania dostępne w zasięgu jednego kliknięcia w nowoczesnym panelu ustawień.
+## ✨ User Experience
+Home Screen Shortcuts: Instant access to your most-visited websites directly from the browser's dashboard.
+
+Intuitive Settings UI: A modern control panel that puts all filtering and security options just one click away.
+
+
+## 🛠 Tech Stack
+Framework: Flutter (Dart)
+
+WebView Engine: flutter_inappwebview
+
+State Management: Ephemeral State (setState) — Optimized for low memory overhead and high performance in a single-view architecture.
+
+Persistence: shared_preferences for blacklist and security configurations.
+
+## 🚧 Current Challenges
+As this project is in active development, I am currently tackling the following architectural challenges:
+
+Race Conditions in State Synchronization: Currently investigating sporadic "Site Protected" overlays. Since I use setState for UI updates, I am optimizing the bridge between the WebView's asynchronous navigation callbacks and the Flutter build cycle to ensure the security layer always has the most current URI context before rendering a block-page.
+
+Complex Navigation & Redirect Loops: Beyond standard ad-filtering, I am debugging issues with multi-stage SSO (Single Sign-On) flows (e.g., USOSweb). I am currently refining the navigation policy to ensure that security checks don't interfere with essential authentication handshakes, even when external to the AdBlock logic.
+
+
+
+
