@@ -1119,127 +1119,324 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   // ── Czarna lista ─────────────────────────────────────────────────────────
 
   void _showListEditor(BrowserService svc) {
-    final addC = TextEditingController();
     bool authenticated = svc.savedPassword == null;
 
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDS) => AlertDialog(
-          backgroundColor: const Color(0xFF202124),
-          title: Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  "Czarna lista",
-                  style: TextStyle(color: Colors.white, fontSize: 18),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(
-                  Icons.delete_sweep,
-                  color: Colors.red,
-                  size: 28,
-                ),
-                tooltip: "Wyczyść wszystko",
-                onPressed: () async {
-                  if (!authenticated) {
-                    final granted = await _askForPasswordOnly(svc);
-                    if (granted != true) return;
-                    authenticated = true;
-                  }
-                  await svc.clearBlackList();
-                  setDS(() {});
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Lista została całkowicie wyczyszczona"),
-                      ),
-                    );
-                  }
-                },
-              ),
-            ],
-          ),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+        builder: (context, setDS) {
+          final groups = svc.blackListGroups;
+          final groupNames = groups.keys.toList();
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF202124),
+            title: Row(
               children: [
-                TextField(
-                  controller: addC,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    hintText: "Dodaj domenę (np. facebook.com)",
-                    hintStyle: const TextStyle(color: Colors.grey),
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.add, color: Colors.blue),
-                      onPressed: () {
-                        if (addC.text.isNotEmpty) {
-                          svc.addToBlackList(addC.text);
-                          addC.clear();
-                          setDS(() {});
-                        }
-                      },
-                    ),
+                const Expanded(
+                  child: Text(
+                    "Czarna lista",
+                    style: TextStyle(color: Colors.white, fontSize: 18),
                   ),
                 ),
-                const Divider(color: Colors.grey),
-                Flexible(
-                  child: svc.blackList.isEmpty
-                      ? const Padding(
-                          padding: EdgeInsets.all(20.0),
-                          child: Text(
-                            "Lista jest pusta",
-                            style: TextStyle(color: Colors.grey),
-                          ),
-                        )
-                      : ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: svc.blackList.length,
-                          itemBuilder: (context, index) => ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: Text(
-                              svc.blackList[index],
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                              ),
-                            ),
-                            trailing: IconButton(
-                              icon: const Icon(
-                                Icons.close,
-                                color: Colors.redAccent,
-                                size: 20,
-                              ),
-                              onPressed: () async {
-                                if (!authenticated) {
-                                  final granted = await _askForPasswordOnly(
-                                    svc,
-                                  );
-                                  if (granted != true) return;
-                                  authenticated = true;
-                                }
-                                svc.removeFromBlackList(index);
-                                setDS(() {});
-                              },
-                            ),
-                          ),
+                IconButton(
+                  icon: const Icon(
+                    Icons.add_box_outlined,
+                    color: Colors.blue,
+                    size: 24,
+                  ),
+                  tooltip: "Nowa grupa",
+                  onPressed: () async {
+                    final nameC = TextEditingController();
+                    final name = await showDialog<String>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: const Color(0xFF202124),
+                        title: const Text(
+                          "Nowa grupa",
+                          style: TextStyle(color: Colors.white),
                         ),
+                        content: TextField(
+                          controller: nameC,
+                          autofocus: true,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            hintText: "Nazwa grupy",
+                            hintStyle: TextStyle(color: Colors.grey),
+                          ),
+                          onSubmitted: (v) => Navigator.pop(ctx, v),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text(
+                              "ANULUJ",
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx, nameC.text),
+                            child: const Text(
+                              "DODAJ",
+                              style: TextStyle(color: Colors.blue),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (name != null && name.trim().isNotEmpty) {
+                      await svc.addGroup(name.trim());
+                      setDS(() {});
+                    }
+                  },
                 ),
               ],
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text(
-                "ZAMKNIJ",
-                style: TextStyle(color: Colors.blue),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Info
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.blue.withOpacity(0.25)),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.info_outline, color: Colors.blue, size: 16),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            "Wpisz słowa kluczowe lub adresy stron, których nie chcesz odwiedzać. Przeglądarka zablokuje każdy URL zawierający te wyrazy.",
+                            style: TextStyle(color: Colors.blue, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Grupy
+                  Flexible(
+                    child: groupNames.isEmpty
+                        ? const Padding(
+                            padding: EdgeInsets.all(20),
+                            child: Text(
+                              "Brak grup",
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          )
+                        : ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: groupNames.length,
+                            itemBuilder: (context, gi) {
+                              final groupName = groupNames[gi];
+                              final entries = groups[groupName] ?? [];
+                              final addC = TextEditingController();
+                              return Card(
+                                color: const Color(0xFF2A2A2E),
+                                margin: const EdgeInsets.only(bottom: 8),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: ExpansionTile(
+                                  initiallyExpanded: true,
+                                  collapsedIconColor: Colors.grey,
+                                  iconColor: Colors.blue,
+                                  title: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          groupName,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                      ),
+                                      Text(
+                                        "${entries.length}",
+                                        style: const TextStyle(
+                                          color: Colors.grey,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      // Usuń grupę (tylko niestandardowe)
+                                      if (groupName != 'Strony' &&
+                                          groupName != 'Słowa kluczowe')
+                                        GestureDetector(
+                                          onTap: () async {
+                                            if (!authenticated) {
+                                              final granted =
+                                                  await _askForPasswordOnly(
+                                                    svc,
+                                                  );
+                                              if (granted != true) return;
+                                              authenticated = true;
+                                            }
+                                            await svc.removeGroup(groupName);
+                                            setDS(() {});
+                                          },
+                                          child: const Padding(
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal: 4,
+                                            ),
+                                            child: Icon(
+                                              Icons.delete_outline,
+                                              color: Colors.redAccent,
+                                              size: 18,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  children: [
+                                    // Pole dodawania
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        12,
+                                        0,
+                                        12,
+                                        8,
+                                      ),
+                                      child: TextField(
+                                        controller: addC,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                        ),
+                                        decoration: InputDecoration(
+                                          hintText:
+                                              groupName == 'Słowa kluczowe'
+                                              ? "Dodaj słowo (np. hazard)"
+                                              : "Dodaj adres (np. facebook.com)",
+                                          hintStyle: const TextStyle(
+                                            color: Colors.grey,
+                                            fontSize: 12,
+                                          ),
+                                          isDense: true,
+                                          suffixIcon: IconButton(
+                                            icon: const Icon(
+                                              Icons.add,
+                                              color: Colors.blue,
+                                              size: 18,
+                                            ),
+                                            onPressed: () async {
+                                              if (addC.text.isEmpty) return;
+                                              await svc.addToBlackListGroup(
+                                                groupName,
+                                                addC.text,
+                                              );
+                                              addC.clear();
+                                              setDS(() {});
+                                            },
+                                          ),
+                                        ),
+                                        onSubmitted: (v) async {
+                                          if (v.isEmpty) return;
+                                          await svc.addToBlackListGroup(
+                                            groupName,
+                                            v,
+                                          );
+                                          addC.clear();
+                                          setDS(() {});
+                                        },
+                                      ),
+                                    ),
+                                    // Wpisy
+                                    if (entries.isEmpty)
+                                      const Padding(
+                                        padding: EdgeInsets.fromLTRB(
+                                          16,
+                                          0,
+                                          16,
+                                          12,
+                                        ),
+                                        child: Text(
+                                          "Brak wpisów",
+                                          style: TextStyle(
+                                            color: Colors.grey,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      )
+                                    else
+                                      ...entries.map(
+                                        (entry) => ListTile(
+                                          dense: true,
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                horizontal: 16,
+                                                vertical: 0,
+                                              ),
+                                          leading: Icon(
+                                            groupName == 'Słowa kluczowe'
+                                                ? Icons.text_fields
+                                                : Icons.language,
+                                            color: Colors.grey,
+                                            size: 16,
+                                          ),
+                                          title: Text(
+                                            entry,
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                          trailing: IconButton(
+                                            icon: const Icon(
+                                              Icons.close,
+                                              color: Colors.redAccent,
+                                              size: 18,
+                                            ),
+                                            onPressed: () async {
+                                              if (!authenticated) {
+                                                final granted =
+                                                    await _askForPasswordOnly(
+                                                      svc,
+                                                    );
+                                                if (granted != true) return;
+                                                authenticated = true;
+                                              }
+                                              await svc
+                                                  .removeFromBlackListGroup(
+                                                    groupName,
+                                                    entry,
+                                                  );
+                                              setDS(() {});
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  "ZAMKNIJ",
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

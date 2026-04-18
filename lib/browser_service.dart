@@ -34,6 +34,13 @@ class BrowserService extends ChangeNotifier {
   int currentTabIndex = 0;
 
   List<String> blackList = [];
+
+  // Grupy czarnej listy: nazwa grupy → lista wpisów
+  // Wpisy z grup są automatycznie synchronizowane z blackList
+  Map<String, List<String>> blackListGroups = {
+    'Strony': [],
+    'Słowa kluczowe': [],
+  };
   Set<String> remoteBlockedDomains = {};
   Set<String> remoteBlockedProxy = {};
   List<Map<String, String>> history = [];
@@ -549,6 +556,23 @@ class BrowserService extends ChangeNotifier {
     incognitoMode = p.getBool('incognito_mode') ?? false;
     blackList =
         p.getStringList('blocked_pages') ?? ["facebook.com", "instagram.com"];
+
+    // Wczytaj grupy
+    final groupsData = p.getString('blacklist_groups');
+    if (groupsData != null) {
+      try {
+        final decoded = json.decode(groupsData) as Map<String, dynamic>;
+        blackListGroups = decoded.map(
+          (k, v) => MapEntry(k, List<String>.from(v as List)),
+        );
+      } catch (_) {}
+    } else {
+      // Pierwsza migracja: wpisz istniejące wpisy do grupy "Strony"
+      blackListGroups = {
+        'Strony': List<String>.from(blackList),
+        'Słowa kluczowe': [],
+      };
+    }
     adBlockWhitelist = p.getStringList('adblock_whitelist') ?? [];
 
     debugPrint(
@@ -576,6 +600,48 @@ class BrowserService extends ChangeNotifier {
   Future<void> saveBlackList() async {
     final prefs = await _getPrefs;
     await prefs.setStringList('blocked_pages', blackList);
+    await prefs.setString('blacklist_groups', json.encode(blackListGroups));
+  }
+
+  Future<void> addToBlackListGroup(String group, String entry) async {
+    final clean = entry.toLowerCase().trim();
+    if (clean.isEmpty) return;
+    blackListGroups.putIfAbsent(group, () => []);
+    if (!blackListGroups[group]!.contains(clean)) {
+      blackListGroups[group]!.add(clean);
+    }
+    _syncBlackListFromGroups();
+    await saveBlackList();
+    notifyListeners();
+  }
+
+  Future<void> removeFromBlackListGroup(String group, String entry) async {
+    blackListGroups[group]?.remove(entry);
+    _syncBlackListFromGroups();
+    await saveBlackList();
+    notifyListeners();
+  }
+
+  Future<void> addGroup(String name) async {
+    if (name.trim().isEmpty || blackListGroups.containsKey(name)) return;
+    blackListGroups[name] = [];
+    await saveBlackList();
+    notifyListeners();
+  }
+
+  Future<void> removeGroup(String name) async {
+    blackListGroups.remove(name);
+    _syncBlackListFromGroups();
+    await saveBlackList();
+    notifyListeners();
+  }
+
+  void _syncBlackListFromGroups() {
+    final all = <String>{};
+    for (final entries in blackListGroups.values) {
+      all.addAll(entries);
+    }
+    blackList = all.toList();
   }
 
   void addToBlackList(String domain) {
