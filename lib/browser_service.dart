@@ -706,6 +706,111 @@ class BrowserService extends ChangeNotifier {
     return false;
   }
 
+  // ─────────────────────────────────────────────
+  //  FUZZY MATCHING
+  // ─────────────────────────────────────────────
+
+  /// Normalizuje tekst: leet speak, diakrytyki, separatory
+  String _normalize(String s) {
+    s = s.toLowerCase();
+    // Diakrytyki
+    const from = 'ąćęłńóśźżàáâãäåæçèéêëìíîïðñòóôõöøùúûüýÿ';
+    const to = 'acelnoszzaaaaaaaceeeeiiiidnoooooouuuuyy';
+    for (var i = 0; i < from.length; i++) {
+      s = s.replaceAll(from[i], to[i]);
+    }
+    // Leet speak
+    s = s
+        .replaceAll('0', 'o')
+        .replaceAll('1', 'i')
+        .replaceAll('3', 'e')
+        .replaceAll('4', 'a')
+        .replaceAll('5', 's')
+        .replaceAll('6', 'g')
+        .replaceAll('7', 't')
+        .replaceAll('8', 'b')
+        .replaceAll('@', 'a')
+        .replaceAll('\$', 's')
+        .replaceAll('+', 't');
+    // Separatory → spacja (będziemy splitować)
+    s = s.replaceAll(RegExp(r'[.\-_/]'), ' ');
+    // Usuń wszystko poza a-z i spacją
+    s = s.replaceAll(RegExp(r'[^a-z ]'), '');
+    return s;
+  }
+
+  /// Odległość Levenshteina
+  int _levenshtein(String a, String b) {
+    if (a == b) return 0;
+    if (a.isEmpty) return b.length;
+    if (b.isEmpty) return a.length;
+    final la = a.length, lb = b.length;
+    // Optymalizacja: jeśli różnica długości > 3, nie ma sensu liczyć
+    if ((la - lb).abs() > 3) return 99;
+    final prev = List<int>.generate(lb + 1, (i) => i);
+    final curr = List<int>.filled(lb + 1, 0);
+    for (var i = 1; i <= la; i++) {
+      curr[0] = i;
+      for (var j = 1; j <= lb; j++) {
+        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+        curr[j] = [
+          curr[j - 1] + 1,
+          prev[j] + 1,
+          prev[j - 1] + cost,
+        ].reduce((x, y) => x < y ? x : y);
+      }
+      prev.setAll(0, curr);
+    }
+    return prev[lb];
+  }
+
+  /// Próg odległości edycyjnej w zależności od długości słowa kluczowego
+  int _threshold(int wordLen) {
+    if (wordLen <= 3) return 0; // krótkie słowa — tylko dokładne
+    if (wordLen <= 5) return 1;
+    if (wordLen <= 8) return 2;
+    return 3;
+  }
+
+  /// Rozbija URL na tokeny do analizy (host + segmenty ścieżki + query values)
+  List<String> _urlTokens(String normalizedUrl) {
+    final uri = Uri.tryParse(normalizedUrl);
+    if (uri == null) return [normalizedUrl];
+    final tokens = <String>[];
+    // Host bez TLD (np. "pornhub" z "pornhub.com")
+    final hostParts = uri.host.split('.');
+    tokens.addAll(hostParts.where((p) => p.length > 2));
+    // Segmenty ścieżki
+    tokens.addAll(uri.pathSegments);
+    // Wartości parametrów query (np. q=szukana+fraza)
+    tokens.addAll(uri.queryParameters.values);
+    return tokens
+        .map(_normalize)
+        .expand((t) => t.split(' '))
+        .where((t) => t.length >= 3)
+        .toList();
+  }
+
+  /// Sprawdza czy keyword fuzzy-matchuje którykolwiek token z URL
+  bool _fuzzyMatchesUrl(String keyword, String normalizedUrl) {
+    final normKeyword = _normalize(keyword);
+    // Pomijamy bardzo krótkie słowa kluczowe (mogłyby być za ogólne)
+    if (normKeyword.length < 3) return false;
+    final threshold = _threshold(normKeyword.length);
+    final tokens = _urlTokens(normalizedUrl);
+    for (final token in tokens) {
+      // Dokładne dopasowanie (po normalizacji)
+      if (token == normKeyword) return true;
+      // Fuzzy — tylko jeśli długości są zbliżone
+      if ((token.length - normKeyword.length).abs() <= threshold) {
+        if (_levenshtein(token, normKeyword) <= threshold) return true;
+      }
+      // Zawieranie: długie słowo kluczowe wewnątrz tokenu
+      if (normKeyword.length >= 5 && token.contains(normKeyword)) return true;
+    }
+    return false;
+  }
+
   // Subdomeny zawsze przepuszczane (np. logowanie Google/YouTube)
   static const _allowedSubdomains = [
     'accounts.google.com',
@@ -755,7 +860,7 @@ class BrowserService extends ChangeNotifier {
       // Używamy 'host', a nie 'lowerUrl', żeby uniknąć blokowania np. wyników wyszukiwania
       // w Google, które tylko wyświetlają te słowa w tytule.
       for (final word in pornKeywords) {
-        if (lowerUrl.contains(word.toLowerCase())) {
+        if (_fuzzyMatchesUrl(word, normalizedUrl)) {
           return BlockReason.content;
         }
       }
@@ -764,7 +869,9 @@ class BrowserService extends ChangeNotifier {
     // 4. Twoja prywatna czarna lista
     if (blackList.any(
       (s) =>
-          host.contains(s.toLowerCase()) || lowerUrl.contains(s.toLowerCase()),
+          host.contains(s.toLowerCase()) ||
+          lowerUrl.contains(s.toLowerCase()) ||
+          _fuzzyMatchesUrl(s, normalizedUrl),
     )) {
       return BlockReason.blacklist;
     }
@@ -834,7 +941,7 @@ class BrowserService extends ChangeNotifier {
         return (BlockReason.content, host);
       }
       for (final word in pornKeywords) {
-        if (lowerUrl.contains(word.toLowerCase())) {
+        if (_fuzzyMatchesUrl(word, normalizedUrl)) {
           return (BlockReason.content, word);
         }
       }
@@ -843,7 +950,8 @@ class BrowserService extends ChangeNotifier {
     // 3. Czarna lista
     for (final s in blackList) {
       if (host.contains(s.toLowerCase()) ||
-          lowerUrl.contains(s.toLowerCase())) {
+          lowerUrl.contains(s.toLowerCase()) ||
+          _fuzzyMatchesUrl(s, normalizedUrl)) {
         return (BlockReason.blacklist, s);
       }
     }
