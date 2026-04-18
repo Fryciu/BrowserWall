@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart'
     show consolidateHttpClientResponseBytes, setEquals;
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as pathh;
+import 'dart:async';
 
 // ─────────────────────────────────────────────
 //  MODEL
@@ -68,12 +69,17 @@ class BrowserService extends ChangeNotifier {
     "incest", "taboo", "fisting", "squirt",
     "stripping", "striptease",
     "shemale", "tranny", "femdom", "pegging",
-    "r34",
+    "r34", "hclips",
   ];
 
   // ── Gettery wygodne ──────────────────────────
   TabModel get currentTab => tabs[currentTabIndex];
   void notifyShortcut() {
+    notifyListeners();
+  }
+
+  /// Publiczne API do odświeżenia UI (np. po zmianie URL karty)
+  void notifyUI() {
     notifyListeners();
   }
 
@@ -352,77 +358,183 @@ class BrowserService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<String?> downloadFileFromWebView({
-    required InAppWebViewController controller,
+  /// Pobiera plik PDF korzystając z sesji WebView (cookies, nagłówki, sesja).
+  /// Metoda 1: fetch() przez JS w kontekście WebView — omija ochronę botów.
+  /// Metoda 2: fallback przez HttpClient z pełnymi nagłówkami (inne serwery).
+  // Dodaj te importy na górze, jeśli ich nie ma:
+  // import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+  // import 'dart:io';
+
+  /// Pobiera plik PDF przez fetch() wewnątrz WebView — pełny kontekst przeglądarki.
+  /// Fallback: HttpClient z nagłówkami (dla serwerów bez JS challenge).
+  Future<String?> downloadFileWithFullHeaders({
+    required InAppWebViewController? controller,
     required String url,
+    String? refererUrl,
   }) async {
     try {
-      // Pobierz cookies z WebView dla danego URL
-      final uri = Uri.tryParse(url);
-      final cookieManager = CookieManager.instance();
-      final cookies = uri != null
-          ? await cookieManager.getCookies(url: WebUri(url))
-          : <Cookie>[];
-
-      final cookieHeader = cookies
-          .map((c) => '${c.name}=${c.value}')
-          .join('; ');
-
-      // Pobierz plik przez Dart http (brak ograniczeń CORS)
-      final headers = <String, String>{
-        'User-Agent':
-            'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        if (cookieHeader.isNotEmpty) 'Cookie': cookieHeader,
-      };
-
       final client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 30);
       final request = await client.getUrl(Uri.parse(url));
-      headers.forEach((k, v) => request.headers.set(k, v));
+
+      String userAgent =
+          "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+      if (controller != null) {
+        userAgent = await controller.getSettings().then(
+          (s) => s?.userAgent ?? userAgent,
+        );
+      }
+
+      request.headers.set('User-Agent', userAgent);
+      request.headers.set('Accept', 'application/pdf,*/*;q=0.8');
       request.headers.set(
-        'Access-Control-Allow-Origin',
-        '*',
-      ); // Dodaj ten nagłówek
+        'Accept-Language',
+        'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
+      );
+      request.headers.set('Sec-Fetch-Dest', 'document');
+      request.headers.set('Sec-Fetch-Mode', 'navigate');
+      request.headers.set('Sec-Fetch-Site', 'same-origin');
+      request.headers.set('Upgrade-Insecure-Requests', '1');
+
+      // Referer = strona z której pochodzi pobieranie
+      final ref =
+          refererUrl ??
+          (controller != null ? (await controller.getUrl())?.toString() : null);
+      if (ref != null) request.headers.set('Referer', ref);
+
+      // Cookies z WebView
+      final cookieManager = CookieManager.instance();
+      final cookies = await cookieManager.getCookies(url: WebUri(url));
+      if (cookies.isNotEmpty) {
+        request.headers.set(
+          'Cookie',
+          cookies.map((c) => '${c.name}=${c.value}').join('; '),
+        );
+      }
+
       final response = await request.close();
 
-      if (response.statusCode < 200 || response.statusCode >= 300) return null;
-
-      final bytes = await consolidateHttpClientResponseBytes(response);
-
-      final dir = await getTemporaryDirectory();
-      final fileName = _parseFileName(
-        response.headers.value('content-disposition'),
-        url,
-      );
-      final filePath = pathh.join(dir.path, fileName);
-      await File(filePath).writeAsBytes(bytes);
-      return filePath;
+      if (response.statusCode == 200) {
+        final bytes = await consolidateHttpClientResponseBytes(response);
+        String fileName =
+            "document_${DateTime.now().millisecondsSinceEpoch}.pdf";
+        final disp = response.headers.value('content-disposition');
+        if (disp != null && disp.contains('filename=')) {
+          fileName = disp.split('filename=').last.replaceAll('"', '').trim();
+        }
+        if (!fileName.toLowerCase().endsWith('.pdf')) fileName += '.pdf';
+        final dir = await getTemporaryDirectory();
+        final file = File(pathh.join(dir.path, fileName));
+        await file.writeAsBytes(bytes);
+        print("✅ Pobieranie udane: ${file.path}");
+        return file.path;
+      } else {
+        print("❌ Pobieranie nieudane. Status: ${response.statusCode}");
+        return null;
+      }
     } catch (e) {
-      print("Błąd podczas pobierania: $e");
+      print("❌ Błąd pobierania: $e");
       return null;
     }
   }
 
-  /// Pomocnicza funkcja do wyciągania nazwy pliku
-  String _parseFileName(String? contentDisposition, String url) {
-    if (contentDisposition != null &&
-        contentDisposition.contains('filename=')) {
-      // Próba wyciągnięcia: filename="wyciag.pdf"
-      final regExp = RegExp(r'filename=["?]?(.*?)["?]?($| )');
-      final match = regExp.firstMatch(contentDisposition);
-      if (match != null && match.group(1) != null) {
-        return match.group(1)!;
-      }
-    }
-    // Jeśli serwer nie podał nazwy, weź końcówkę adresu URL lub nadaj czasową
-    String lastSegment = Uri.parse(url).pathSegments.isNotEmpty
-        ? Uri.parse(url).pathSegments.last
-        : "file_${DateTime.now().millisecondsSinceEpoch}";
+  Future<String?> downloadViaJsInWebView({
+    required InAppWebViewController controller,
+    required String url,
+  }) async {
+    try {
+      final completer = Completer<String?>();
 
-    return lastSegment.contains('.') ? lastSegment : "$lastSegment.pdf";
+      // Handler odbierający base64 z JS
+      controller.addJavaScriptHandler(
+        handlerName: 'pdfDownloadResult',
+        callback: (args) async {
+          controller.removeJavaScriptHandler(handlerName: 'pdfDownloadResult');
+          if (args.isEmpty) {
+            completer.complete(null);
+            return;
+          }
+          try {
+            final Map<String, dynamic> parsed = json.decode(args[0] as String);
+            if (parsed.containsKey('base64')) {
+              final bytes = base64Decode(parsed['base64'] as String);
+              String fileName =
+                  "document_${DateTime.now().millisecondsSinceEpoch}.pdf";
+              final cd = parsed['cd'] as String? ?? '';
+              if (cd.contains('filename=')) {
+                fileName = cd
+                    .split('filename=')
+                    .last
+                    .replaceAll('"', '')
+                    .replaceAll("'", '')
+                    .trim();
+              }
+              if (!fileName.toLowerCase().endsWith('.pdf')) fileName += '.pdf';
+              final dir = await getTemporaryDirectory();
+              final file = File(pathh.join(dir.path, fileName));
+              await file.writeAsBytes(bytes);
+              print("✅ JS fetch udany: ${file.path}");
+              completer.complete(file.path);
+            } else {
+              print("❌ JS fetch błąd: ${parsed['error']}");
+              completer.complete(null);
+            }
+          } catch (e) {
+            print("❌ Parse błąd: $e");
+            completer.complete(null);
+          }
+        },
+      );
+
+      // Fetch w kontekście aktualnej strony — pełna sesja, cookies, origin
+      await controller.evaluateJavascript(
+        source:
+            '''
+      (async function() {
+        try {
+          const resp = await fetch(${json.encode(url)}, {
+            credentials: "include",
+            headers: { "Accept": "application/pdf,*/*" }
+          });
+          if (!resp.ok) {
+            window.flutter_inappwebview.callHandler(
+              "pdfDownloadResult", JSON.stringify({error: resp.status}));
+            return;
+          }
+          const buf = await resp.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let bin = "";
+          const chunk = 8192;
+          for (let i = 0; i < bytes.length; i += chunk) {
+            bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+          }
+          const b64 = btoa(bin);
+          const cd = resp.headers.get("content-disposition") || "";
+          window.flutter_inappwebview.callHandler(
+            "pdfDownloadResult", JSON.stringify({base64: b64, cd: cd}));
+        } catch(e) {
+          window.flutter_inappwebview.callHandler(
+            "pdfDownloadResult", JSON.stringify({error: e.toString()}));
+        }
+      })();
+    ''',
+      );
+
+      return await completer.future.timeout(
+        const Duration(seconds: 45),
+        onTimeout: () {
+          controller.removeJavaScriptHandler(handlerName: 'pdfDownloadResult');
+          print("❌ JS fetch timeout");
+          return null;
+        },
+      );
+    } catch (e) {
+      print("❌ downloadViaJsInWebView błąd: $e");
+      return null;
+    }
   }
 
+  /// Pomocnicza funkcja do wyciągania nazwy pliku z nagłówka lub URL
   Future<void> loadData() async {
     final t0 = DateTime.now();
     final p = await SharedPreferences.getInstance();
@@ -528,8 +640,24 @@ class BrowserService extends ChangeNotifier {
     return false;
   }
 
+  // Subdomeny zawsze przepuszczane (np. logowanie Google/YouTube)
+  static const _allowedSubdomains = [
+    'accounts.google.com',
+    'accounts.youtube.com',
+    'myaccount.google.com',
+    'signin.google.com',
+    'login.microsoftonline.com',
+    'accounts.firefox.com',
+    'appleid.apple.com',
+  ];
+
+  bool _isAllowedSubdomain(String host) {
+    return _allowedSubdomains.any(
+      (allowed) => host == allowed || host.endsWith('.$allowed'),
+    );
+  }
+
   BlockReason getBlockReason(String urlString) {
-    print("Jestem tuuuuu1");
     if (urlString.isEmpty) return BlockReason.none;
 
     final lowerUrl = urlString.toLowerCase().trim();
@@ -544,12 +672,14 @@ class BrowserService extends ChangeNotifier {
     // Jeśli uri jest nullem, używamy surowego tekstu, ale host jest kluczowy
     final host = uri?.host ?? lowerUrl;
 
+    // 0. Whitelist — subdomeny logowania zawsze przepuszczane
+    if (_isAllowedSubdomain(host)) return BlockReason.none;
+
     // 2. Blokada Proxy / VPN
     if (_isProxyOrVpnUrl(normalizedUrl)) return BlockReason.proxy;
 
     // 3. Filtr treści dla dorosłych
     if (adultFilterEnabled) {
-      print("Jestem tuuuuu2");
       // Sprawdzenie pełnego hosta w pobranych listach (np. "pornhub.com")
       if (remoteBlockedDomains.contains(host)) {
         return BlockReason.content;
@@ -559,7 +689,6 @@ class BrowserService extends ChangeNotifier {
       // Używamy 'host', a nie 'lowerUrl', żeby uniknąć blokowania np. wyników wyszukiwania
       // w Google, które tylko wyświetlają te słowa w tytule.
       for (final word in pornKeywords) {
-        print("Jestem tuuuuu3");
         if (lowerUrl.contains(word.toLowerCase())) {
           return BlockReason.content;
         }
@@ -577,20 +706,103 @@ class BrowserService extends ChangeNotifier {
     return BlockReason.none;
   }
 
+  /// Jak getBlockReason, ale dodatkowo zwraca dopasowany ciąg (słowo kluczowe / domenę).
+  (BlockReason, String?) getBlockReasonWithMatch(String urlString) {
+    if (urlString.isEmpty) return (BlockReason.none, null);
+
+    final lowerUrl = urlString.toLowerCase().trim();
+    String normalizedUrl = lowerUrl;
+    if (!lowerUrl.startsWith('http://') && !lowerUrl.startsWith('https://')) {
+      normalizedUrl = 'https://$lowerUrl';
+    }
+
+    final uri = Uri.tryParse(normalizedUrl);
+    final host = uri?.host ?? lowerUrl;
+
+    // 0. Whitelist — subdomeny logowania zawsze przepuszczane
+    if (_isAllowedSubdomain(host)) return (BlockReason.none, null);
+
+    // 1. Proxy / VPN
+    if (uri != null && remoteBlockedProxy.contains(uri.host)) {
+      return (BlockReason.proxy, uri.host);
+    }
+    for (final domain in remoteBlockedProxy) {
+      if (lowerUrl.contains(domain)) return (BlockReason.proxy, domain);
+    }
+    const proxyKeywords = [
+      "proxy",
+      "proxies",
+      "unblock",
+      "bypass",
+      "anonymizer",
+      "anonymouse",
+      "hidemy",
+      "hideip",
+      "croxyproxy",
+      "kproxy",
+      "ultrasurf",
+      "psiphon",
+      "vpn",
+      "nordvpn",
+      "expressvpn",
+      "surfshark",
+      "cyberghost",
+      "privatevpn",
+      "ipvanish",
+      "purevpn",
+      "tunnelbear",
+      "windscribe",
+      "protonvpn",
+      "mullvad",
+      "hidemyass",
+      "strongvpn",
+      "astrill",
+    ];
+    for (final word in proxyKeywords) {
+      if (lowerUrl.contains(word)) return (BlockReason.proxy, word);
+    }
+
+    // 2. Filtr treści dla dorosłych
+    if (adultFilterEnabled) {
+      if (remoteBlockedDomains.contains(host)) {
+        return (BlockReason.content, host);
+      }
+      for (final word in pornKeywords) {
+        if (lowerUrl.contains(word.toLowerCase())) {
+          return (BlockReason.content, word);
+        }
+      }
+    }
+
+    // 3. Czarna lista
+    for (final s in blackList) {
+      if (host.contains(s.toLowerCase()) ||
+          lowerUrl.contains(s.toLowerCase())) {
+        return (BlockReason.blacklist, s);
+      }
+    }
+
+    return (BlockReason.none, null);
+  }
+
   bool handleNavigation(
     String urlString,
     InAppWebViewController controller,
-    void Function(WebUri, InAppWebViewController?) onPasswordRequired,
+    void Function(WebUri, InAppWebViewController?, BlockReason, String?)
+    onPasswordRequired,
     void Function(String) onBlocked,
   ) {
     print("🔍 handleNavigation: $urlString");
 
     // Najpierw sprawdź słowa kluczowe — nawet w zapytaniach Google
-    final reason = getBlockReason(urlString);
-    print("🔍 reason: $reason");
+    final (reason, matchedWord) = getBlockReasonWithMatch(urlString);
+    print("🔍 reason: $reason, matched: $matchedWord");
 
     if (reason == BlockReason.proxy) {
-      onBlocked("Ta strona jest zablokowana — proxy i VPN są niedozwolone.");
+      final msg = matchedWord != null
+          ? "Ta strona jest zablokowana — proxy i VPN są niedozwolone. [\"$matchedWord\"]"
+          : "Ta strona jest zablokowana — proxy i VPN są niedozwolone.";
+      onBlocked(msg);
       return true;
     }
 
@@ -599,9 +811,12 @@ class BrowserService extends ChangeNotifier {
         if (canSkipAuth(urlString)) {
           return false; // już autoryzowana, przepuść
         }
-        onPasswordRequired(WebUri(urlString), controller);
+        onPasswordRequired(WebUri(urlString), controller, reason, matchedWord);
       } else {
-        onBlocked("Ta strona jest zablokowana.");
+        final msg = matchedWord != null
+            ? "Ta strona jest zablokowana. [\"$matchedWord\"]"
+            : "Ta strona jest zablokowana.";
+        onBlocked(msg);
       }
       return true;
     }
@@ -1068,6 +1283,9 @@ class BrowserService extends ChangeNotifier {
       if (phrase.isNotEmpty) displayTitle = "🔍 $phrase";
     }
 
+    // Jeśli ostatni wpis ma ten sam tytuł — nie dodawaj duplikatu
+    if (history.isNotEmpty && history.first['title'] == displayTitle) return;
+
     history.insert(0, {
       'title': displayTitle,
       'url': url,
@@ -1083,14 +1301,31 @@ class BrowserService extends ChangeNotifier {
 
   Future<void> saveTabs() async {
     final prefs = await _getPrefs;
-    final tabsData = tabs.map((t) => {'url': t.url, 'title': t.title}).toList();
-    await prefs.setString('saved_tabs', json.encode(tabsData));
+    // Pobierz aktualny URL z kontrolera WebView (bardziej wiarygodne niż tab.url)
+    final tabsData = <Map<String, String>>[];
+    for (final t in tabs) {
+      String url = t.url;
+      if (t.controller != null) {
+        final liveUrl = (await t.controller!.getUrl())?.toString();
+        if (liveUrl != null &&
+            liveUrl.isNotEmpty &&
+            !liveUrl.startsWith('about:')) {
+          url = liveUrl;
+          t.url = liveUrl; // synchronizuj też pole
+        }
+      }
+      tabsData.add({'url': url, 'title': t.title});
+    }
+    final encoded = json.encode(tabsData);
+    await prefs.setString('saved_tabs', encoded);
     await prefs.setInt('saved_tab_index', currentTabIndex);
+    debugPrint('💾 saveTabs: $encoded');
   }
 
   Future<void> loadTabs() async {
     final prefs = await _getPrefs;
     final tabsData = prefs.getString('saved_tabs');
+    debugPrint('📂 loadTabs raw: $tabsData');
     final savedIndex = prefs.getInt('saved_tab_index') ?? 0;
     if (tabsData != null) {
       final decoded = json.decode(tabsData) as List<dynamic>;
@@ -1100,13 +1335,17 @@ class BrowserService extends ChangeNotifier {
               (e) => TabModel(
                 url: e['url'] as String,
                 title: e['title'] as String,
-                loaded:
-                    false, // wszystkie nieaktywne zaczynają jako niezaładowane
+                loaded: false,
               ),
             )
             .toList();
         currentTabIndex = savedIndex.clamp(0, tabs.length - 1);
-        tabs[currentTabIndex].loaded = true; // tylko aktywna ładuje się od razu
+        tabs[currentTabIndex].loaded = true;
+        debugPrint(
+          '📂 loadTabs: ${tabs.length} kart, aktywna $currentTabIndex',
+        );
+        for (final t in tabs) debugPrint('  tab.url=${t.url}');
+        notifyListeners();
       }
     }
   }

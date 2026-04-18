@@ -15,14 +15,32 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   void showPasswordDialog(
     BrowserService svc,
     WebUri url,
-    InAppWebViewController? controller,
-  ) {
+    InAppWebViewController? controller, {
+    BlockReason reason = BlockReason.content,
+    String? matchedWord,
+  }) {
     if (svc.canSkipAuth(url.toString())) {
       controller?.loadUrl(urlRequest: URLRequest(url: url));
       return;
     }
     if (svc.isVerifying) return;
     svc.isVerifying = true;
+
+    // Opis przyczyny blokady
+    final (
+      String reasonIcon,
+      String reasonLabel,
+      Color reasonColor,
+    ) = switch (reason) {
+      BlockReason.content => ("🔞", "Treści dla dorosłych", Colors.orange),
+      BlockReason.blacklist => (
+        "🚫",
+        "Strona na czarnej liście",
+        Colors.redAccent,
+      ),
+      BlockReason.proxy => ("🛡️", "VPN / Proxy", Colors.purple),
+      _ => ("🔒", "Strona zablokowana", Colors.grey),
+    };
 
     String enteredPass = "";
     showDialog(
@@ -34,18 +52,88 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
           "Strona Chroniona",
           style: TextStyle(color: Colors.white),
         ),
-        content: TextField(
-          style: const TextStyle(color: Colors.white),
-          obscureText: true,
-          autofocus: true,
-          onChanged: (v) => enteredPass = v,
-          decoration: const InputDecoration(
-            hintText: "Wpisz hasło",
-            hintStyle: TextStyle(color: Colors.grey),
-            enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.blue),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Baner z przyczyną blokady
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: reasonColor.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: reasonColor.withOpacity(0.4)),
+              ),
+              child: Row(
+                children: [
+                  Text(reasonIcon, style: const TextStyle(fontSize: 20)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Powód blokady",
+                          style: TextStyle(
+                            color: reasonColor,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          reasonLabel,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        if (matchedWord != null) ...[
+                          const SizedBox(height: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: reasonColor.withOpacity(0.18),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              '"$matchedWord"',
+                              style: TextStyle(
+                                color: reasonColor,
+                                fontSize: 12,
+                                fontFamily: 'monospace',
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
+            TextField(
+              style: const TextStyle(color: Colors.white),
+              obscureText: true,
+              autofocus: true,
+              onChanged: (v) => enteredPass = v,
+              decoration: const InputDecoration(
+                hintText: "Wpisz hasło",
+                hintStyle: TextStyle(color: Colors.grey),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.blue),
+                ),
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(

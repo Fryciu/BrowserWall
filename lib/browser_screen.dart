@@ -29,8 +29,17 @@ class _BrowserScreenState extends State<BrowserScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final svc = context.read<BrowserService>();
       svc.addListener(_handlePendingShortcut);
+      svc.addListener(_syncUrlBar);
       _handlePendingShortcut();
     });
+  }
+
+  void _syncUrlBar() {
+    final svc = context.read<BrowserService>();
+    final currentUrl = svc.currentTab.url;
+    if (urlController.text != currentUrl && !urlFocusNode.hasFocus) {
+      urlController.text = currentUrl;
+    }
   }
 
   void _handlePendingShortcut() {
@@ -52,6 +61,7 @@ class _BrowserScreenState extends State<BrowserScreen>
   @override
   void dispose() {
     context.read<BrowserService>().removeListener(_handlePendingShortcut);
+    context.read<BrowserService>().removeListener(_syncUrlBar);
     urlFocusNode.dispose();
     urlController.dispose();
     super.dispose();
@@ -249,17 +259,70 @@ class _BrowserScreenState extends State<BrowserScreen>
                                   color: Colors.white,
                                   fontSize: 14,
                                 ),
-                                decoration: const InputDecoration(
+                                decoration: InputDecoration(
                                   isDense: true,
                                   border: InputBorder.none,
-                                  prefixIcon: Icon(
+                                  prefixIcon: const Icon(
                                     Icons.search,
                                     color: Colors.grey,
                                     size: 18,
                                   ),
-                                  contentPadding: EdgeInsets.symmetric(
+                                  contentPadding: const EdgeInsets.symmetric(
                                     vertical: 10,
                                   ),
+                                  suffixIcon: urlFocusNode.hasFocus
+                                      ? null
+                                      : IconButton(
+                                          icon: const Icon(
+                                            Icons.copy,
+                                            color: Colors.grey,
+                                            size: 16,
+                                          ),
+                                          tooltip: 'Kopiuj link',
+                                          onPressed: () {
+                                            final url = urlController.text;
+                                            if (url.isNotEmpty) {
+                                              Clipboard.setData(
+                                                ClipboardData(text: url),
+                                              );
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Row(
+                                                    children: [
+                                                      const Icon(
+                                                        Icons.check_circle,
+                                                        color: Colors.white,
+                                                        size: 16,
+                                                      ),
+                                                      const SizedBox(width: 8),
+                                                      Expanded(
+                                                        child: Text(
+                                                          'Skopiowano: $url',
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style:
+                                                              const TextStyle(
+                                                                fontSize: 12,
+                                                              ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  backgroundColor:
+                                                      Colors.green.shade700,
+                                                  behavior:
+                                                      SnackBarBehavior.floating,
+                                                  duration: const Duration(
+                                                    seconds: 2,
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                          },
+                                        ),
                                 ),
                                 onTap: () {
                                   if (urlController.text.isNotEmpty) {
@@ -276,8 +339,14 @@ class _BrowserScreenState extends State<BrowserScreen>
                                   final blocked = svc.handleNavigation(
                                     targetUrlString,
                                     svc.currentTab.controller!,
-                                    (url, ctrl) =>
-                                        showPasswordDialog(svc, url, ctrl),
+                                    (url, ctrl, reason, matchedWord) =>
+                                        showPasswordDialog(
+                                          svc,
+                                          url,
+                                          ctrl,
+                                          reason: reason,
+                                          matchedWord: matchedWord,
+                                        ),
                                     (message) => ScaffoldMessenger.of(context)
                                         .showSnackBar(
                                           SnackBar(
@@ -364,7 +433,22 @@ class _BrowserScreenState extends State<BrowserScreen>
                           tab: tab,
                           svc: svc,
                           urlController: urlController,
-                          onPasswordRequired: showPasswordDialog,
+                          onPasswordRequired:
+                              (
+                                svc,
+                                url,
+                                ctrl, {
+                                reason = BlockReason.content,
+                                String? matchedWord,
+                              }) {
+                                showPasswordDialog(
+                                  svc,
+                                  url,
+                                  ctrl,
+                                  reason: reason,
+                                  matchedWord: matchedWord,
+                                );
+                              },
                         ),
                       )
                       .toList(),
