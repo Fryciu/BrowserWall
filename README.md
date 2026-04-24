@@ -9,9 +9,15 @@ The first web browser dedicated to eliminating digital distractions.
 ## 🛡️ Security & Filtering
 Content Filter (SafeSearch): Built-in mechanism to block adult content, designed to maintain focus during deep work or serve as a robust parental control tool.
 
-Integrated AdBlock: I would like to write in a fancy way that this works like a charm, it really doesn't. It crashes redirects of some websites somehow.
+Integrated AdBlock: It is not as good as fe. Ublock Origin, but it's something
 
 Domain Blacklist: Custom blocking of specific domains or keywords to prevent access to distracting websites.
+
+Word Blocklist: Block words which lead you to bad content.
+
+Translate Bypass Prevention: If you write the word in one language, it's linguistic counterparts are blocked as well.
+
+Typo Bypass Prevention: Words are checked using Levenstein length and normalization. If this is a problem (fe. it gets a word it's not supposed to) the maximum length of particular translations can be modified after giving a password.
 
 ## 🔐 Privacy & Control
 Password Protection: Secure your filtering settings with a password to prevent unauthorized configuration changes.
@@ -33,13 +39,7 @@ State Management: Ephemeral State (setState) — Optimized for low memory overhe
 
 Persistence: shared_preferences for blacklist and security configurations.
 
-## 🚧 Current Challenges
-As this project is in active development, I am currently tackling the following architectural challenges:
-
-Race Conditions in State Synchronization: Currently investigating sporadic "Site Protected" overlays. Since I use setState for UI updates, I am optimizing the bridge between the WebView's asynchronous navigation callbacks and the Flutter build cycle to ensure the security layer always has the most current URI context before rendering a block-page.
-
-Complex Navigation & Redirect Loops: Beyond standard ad-filtering, I am debugging issues with multi-stage SSO (Single Sign-On) flows (e.g., USOSweb). I am currently refining the navigation policy to ensure that security checks don't interfere with essential authentication handshakes, even when external to the AdBlock logic.
-
-
-
-
+## 🚧 Current plans
+- I'm planning on testing this browser and if for a month there are no challenges in using it, then I'll implement the english language into it.
+- Adding icons for browsers
+- Testing adding custom browsers as main ones.
