@@ -8,6 +8,8 @@ import 'package:flutter/foundation.dart'
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as pathh;
 import 'dart:async';
+import 'package:http/http.dart' as http;
+import 'package:device_info_plus/device_info_plus.dart';
 
 // ─────────────────────────────────────────────
 //  MODEL
@@ -30,13 +32,37 @@ class BrowserService extends ChangeNotifier {
   String? pendingShortcutUrl;
 
   // --- Stan ---
-  List<TabModel> tabs = [TabModel(url: "https://www.google.com")];
+  List<TabModel> tabs = [TabModel(url: 'https://www.google.com')];
   int currentTabIndex = 0;
 
   List<String> blackList = [];
+  String homePageUrl = 'https://www.google.com';
+  String _userAgent =
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+  String get userAgent => _userAgent;
+  String searchEngineUrl = ''; // puste = nie wybrano jeszcze
+  bool searchEngineSelected = false; // czy użytkownik już wybrał
+
+  /// Własne wyszukiwarki dodane przez użytkownika.
+  /// Każdy wpis: {'name': '...', 'url': '...', 'searchUrl': '...', 'safesearch': 'true'/'false'}
+  /// searchUrl zawiera %s jako placeholder zapytania, np.
+  /// 'https://example.com/search?q=%s'
+  List<Map<String, String>> customSearchEngines = [];
+
+  /// Wbudowane wyszukiwarki ukryte przez użytkownika (lista URL-i).
+  List<String> hiddenBuiltinEngines = [];
 
   // Grupy czarnej listy: nazwa grupy → lista wpisów
   // Wpisy z grup są automatycznie synchronizowane z blackList
+  // Mapa: oryginalne słowo → lista tłumaczeń (włącznie z oryginałem)
+  Map<String, List<String>> _wordTranslations = {};
+  Map<String, int> _wordThresholds = {};
+  // Postęp pobierania tłumaczeń: słowo → 0.0..1.0 (null = gotowe/nie pobiera)
+  final Map<String, double> translationProgress = {};
+  // Cache tłumaczeń pornKeywords (ładowany raz)
+  Set<String> _pornKeywordsExpanded = {};
+  bool _pornKeywordsExpandedLoaded = false;
+
   Map<String, List<String>> blackListGroups = {
     'Strony': [],
     'Słowa kluczowe': [],
@@ -49,6 +75,54 @@ class BrowserService extends ChangeNotifier {
   bool adBlockEnabled = true;
   List<String> adBlockWhitelist = [];
   bool adultFilterEnabled = true;
+
+  /// Języki, w których użytkownik wpisuje słowa do blokowania.
+  /// Tłumaczenia są pobierane TYLKO z tych języków.
+  List<String> wordInputLanguages = ['pl', 'en'];
+
+  static const Map<String, String> availableWordLanguages = {
+    'sq': '🇦🇱 Albański',
+    'en': '🇬🇧 Angielski',
+    'ar': '🇸🇦 Arabski',
+    'az': '🇦🇿 Azerski',
+    'be': '🇧🇾 Białoruski',
+    'bg': '🇧🇬 Bułgarski',
+    'zh': '🇨🇳 Chiński',
+    'hr': '🇭🇷 Chorwacki',
+    'cs': '🇨🇿 Czeski',
+    'da': '🇩🇰 Duński',
+    'et': '🇪🇪 Estoński',
+    'fi': '🇫🇮 Fiński',
+    'fr': '🇫🇷 Francuski',
+    'el': '🇬🇷 Grecki',
+    'he': '🇮🇱 Hebrajski',
+    'es': '🇪🇸 Hiszpański',
+    'hi': '🇮🇳 Hinduski',
+    'nl': '🇳🇱 Holenderski',
+    'id': '🇮🇩 Indonezyjski',
+    'ga': '🇮🇪 Irlandzki',
+    'is': '🇮🇸 Islandzki',
+    'ja': '🇯🇵 Japoński',
+    'ko': '🇰🇷 Koreański',
+    'lt': '🇱🇹 Litewski',
+    'lv': '🇱🇻 Łotewski',
+    'no': '🇳🇴 Norweski',
+    'de': '🇩🇪 Niemiecki',
+    'pl': '🇵🇱 Polski',
+    'pt': '🇵🇹 Portugalski',
+    'ru': '🇷🇺 Rosyjski',
+    'ro': '🇷🇴 Rumuński',
+    'sr': '🇷🇸 Serbski',
+    'sk': '🇸🇰 Słowacki',
+    'sl': '🇸🇮 Słoweński',
+    'sv': '🇸🇪 Szwedzki',
+    'th': '🇹🇭 Tajski',
+    'tr': '🇹🇷 Turecki',
+    'uk': '🇺🇦 Ukraiński',
+    'hu': '🇭🇺 Węgierski',
+    'vi': '🇻🇳 Wietnamski',
+    'it': '🇮🇹 Włoski',
+  };
 
   DateTime? _lastAuthTime;
   String? _lastAuthUrl;
@@ -81,6 +155,26 @@ class BrowserService extends ChangeNotifier {
 
   // ── Gettery wygodne ──────────────────────────
   TabModel get currentTab => tabs[currentTabIndex];
+  Map<String, List<String>> get wordTranslations => _wordTranslations;
+  Map<String, int> get wordThresholds => _wordThresholds;
+  Future<SharedPreferences> getPrefsPublic() => _getPrefs;
+  String get wordTranslationsJson => json.encode(_wordTranslations);
+  bool isTranslating(String word) => translationProgress.containsKey(word);
+
+  Future<void> setWordThreshold(String word, int threshold) async {
+    if (threshold < 0) {
+      _wordThresholds.remove(word);
+    } else {
+      _wordThresholds[word] = threshold.clamp(0, 3);
+    }
+    final prefs = await _getPrefs;
+    await prefs.setString(
+      'word_thresholds',
+      json.encode(_wordThresholds.map((k, v) => MapEntry(k, v))),
+    );
+    notifyListeners();
+  }
+
   void notifyShortcut() {
     notifyListeners();
   }
@@ -90,8 +184,27 @@ class BrowserService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Dodaj to w klasie BrowserService w browser_service.dart
+
+  Future<void> setWordLanguages(List<String> newLanguages) async {
+    wordInputLanguages = newLanguages;
+    final prefs = await _getPrefs;
+    await prefs.setStringList('word_input_languages', newLanguages);
+    notifyListeners(); // Powiadomienie UI o zmianie
+  }
+
+  // Zaktualizuj też metodę loadData() lub init(), aby wczytywała te języki przy starcie:
+  Future<void> loadLanguages() async {
+    final prefs = await _getPrefs;
+    final saved = prefs.getStringList('word_input_languages');
+    if (saved != null) {
+      wordInputLanguages = saved;
+    }
+  }
+
   // ── Inicjalizacja ────────────────────────────
   Future<void> init() async {
+    await _initUserAgent();
     final t0 = DateTime.now();
     await loadData();
     print("loadData: ${DateTime.now().difference(t0).inMilliseconds}ms");
@@ -109,6 +222,11 @@ class BrowserService extends ChangeNotifier {
     final t3 = DateTime.now();
     await loadShortcuts();
     print("loadShortcuts: ${DateTime.now().difference(t3).inMilliseconds}ms");
+
+    // Pobierz tłumaczenia pornKeywords w tle (nie blokuje UI)
+    if (!_pornKeywordsExpandedLoaded) {
+      Future.microtask(() => initPornKeywordsExpanded());
+    }
   }
 
   SharedPreferences? _prefsInstance;
@@ -163,6 +281,309 @@ class BrowserService extends ChangeNotifier {
     adBlockEnabled = value;
     adBlockVersion++; // ← to sygnalizuje że trzeba przebudować WebView
     notifyListeners();
+  }
+
+  // ─────────────────────────────────────────────
+  //  TŁUMACZENIA SŁÓW (Wiktionary API)
+  // ─────────────────────────────────────────────
+
+  /// Pobiera tłumaczenia słowa z Wiktionary API.
+  /// Zwraca listę unikalnych słów (oryginał + tłumaczenia) po normalizacji.
+  // Etapy postępu — 3 fazy: wyszukiwanie, langlinks, synonim Wiktionary
+  // Faza 1 (0-33%): szukaj artykułu Wikipedia dla słowa
+  // Faza 2 (33-90%): pobierz langlinks (odpowiedniki w innych językach)
+  // Faza 3 (90-100%): Wiktionary synonim fallback
+
+  // Glosbe API jest znacznie lepsze do "wszystkich języków"
+
+  Future<List<String>> fetchTranslations(String word) async {
+    final normalized = word.trim();
+    if (normalized.isEmpty) return [];
+
+    final results = <String>{};
+
+    try {
+      // --- KROK 1: Uniwersalne szukanie ID w Wikidata ---
+      // 'wbsearchentities' przeszukuje nazwy we wszystkich językach świata.
+      final searchUrl = Uri.parse(
+        'https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${Uri.encodeComponent(normalized)}&language=en&format=json&origin=*',
+      );
+
+      final searchResp = await http
+          .get(searchUrl)
+          .timeout(const Duration(seconds: 4));
+      String? wikidataId;
+
+      if (searchResp.statusCode == 200) {
+        final searchData = json.decode(searchResp.body);
+        final searchResults = searchData['search'] as List<dynamic>?;
+
+        if (searchResults != null && searchResults.isNotEmpty) {
+          // Bierzemy pierwszy, najbardziej pasujący wynik
+          wikidataId = searchResults.first['id'];
+        }
+      }
+
+      // --- KROK 2: Pobieranie danych encji ---
+      if (wikidataId != null) {
+        final entityUrl = Uri.parse(
+          'https://www.wikidata.org/wiki/Special:EntityData/$wikidataId.json',
+        );
+
+        final entityResp = await http
+            .get(entityUrl)
+            .timeout(const Duration(seconds: 5));
+
+        if (entityResp.statusCode == 200) {
+          final entityData = json.decode(entityResp.body);
+          final entity = entityData['entities'][wikidataId];
+
+          // 1. Pobieranie LABELS (Główne nazwy we wszystkich językach)
+          final labels = entity['labels'] as Map<String, dynamic>?;
+          if (labels != null) {
+            for (var labelData in labels.values) {
+              final val = labelData['value'] as String;
+              _processAndAdd(val, results);
+            }
+          }
+
+          // 2. Pobieranie ALIASES (Synonimy we wszystkich językach)
+          final aliases = entity['aliases'] as Map<String, dynamic>?;
+          if (aliases != null) {
+            for (var langAliases in aliases.values) {
+              for (var aliasData in langAliases) {
+                final val = aliasData['value'] as String;
+                _processAndAdd(val, results);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Błąd API: $e');
+    }
+
+    return results.toList();
+  }
+
+  void _processAndAdd(String val, Set<String> results) {
+    final clean = val.toLowerCase().trim();
+    if (clean.length > 1 &&
+        !clean.contains(':') &&
+        !RegExp(r'Q\d+').hasMatch(clean)) {
+      // Ignoruj techniczne ID Wikidata
+      results.add(clean);
+    }
+  }
+
+  /// Pobiera i zapisuje tłumaczenia dla słowa użytkownika.
+  /// Zwraca listę tłumaczeń (do wyświetlenia w UI).
+  Future<List<String>> fetchAndSaveTranslations(String word) async {
+    final translations = await fetchTranslations(word);
+    _wordTranslations[word] = translations;
+    final prefs = await _getPrefs;
+    await prefs.setString('word_translations', json.encode(_wordTranslations));
+    return translations;
+  }
+
+  /// Inicjalizuje rozszerzoną listę pornKeywords w tle (raz).
+  Future<void> initPornKeywordsExpanded() async {
+    if (_pornKeywordsExpandedLoaded) return;
+    _pornKeywordsExpandedLoaded = true; // zapobiegaj podwójnemu wywołaniu
+
+    // Zacznij od samych znormalizowanych pornKeywords
+    final expanded = <String>{};
+    for (final w in pornKeywords) {
+      expanded.add(_normalize(w));
+    }
+
+    // Pobierz tłumaczenia tylko dla "prawdziwych" słów (nie nazwy serwisów)
+    // Serwisy jak "xvideos", "redtube" itp. pomijamy — są specyficzne
+    final wordsToTranslate = pornKeywords
+        .where(
+          (w) =>
+              !w.contains(RegExp(r'[0-9]')) && // bez cyfr
+              w.length >= 4 && // min 4 znaki
+              !w.contains('-') && // bez myślnika
+              !_isSiteName(w), // nie jest nazwą serwisu
+        )
+        .toList();
+
+    debugPrint(
+      '🌐 Pobieranie tłumaczeń dla ${wordsToTranslate.length} słów kluczowych...',
+    );
+
+    for (final word in wordsToTranslate) {
+      try {
+        final trans = await fetchTranslations(word);
+        expanded.addAll(trans);
+        await Future.delayed(const Duration(milliseconds: 200)); // rate limit
+      } catch (_) {}
+    }
+
+    _pornKeywordsExpanded = expanded;
+    final prefs = await _getPrefs;
+    await prefs.setStringList('porn_keywords_expanded', expanded.toList());
+    debugPrint('✅ pornKeywords expanded: ${expanded.length} słów');
+  }
+
+  // Nazwy własne i marki których NIE wolno dodać jako tłumaczenia
+  static const _blockedExpansions = {
+    'google',
+    'youtube',
+    'facebook',
+    'twitter',
+    'instagram',
+    'wikipedia',
+    'amazon',
+    'apple',
+    'microsoft',
+    'netflix',
+    'gmail',
+    'yahoo',
+    'bing',
+    'reddit',
+    'tiktok',
+    'snapchat',
+    'android',
+    'iphone',
+    'ipad',
+    'windows',
+    'linux',
+    'macos',
+    'chrome',
+    'safari',
+    'firefox',
+    'opera',
+    'edge',
+    'disney',
+    'spotify',
+    'paypal',
+    'ebay',
+    'alibaba',
+  };
+
+  bool _isSiteName(String w) {
+    const siteNames = {
+      'redtube',
+      'xvideos',
+      'xhamster',
+      'xnxx',
+      'spankbang',
+      'tube8',
+      'tnaflix',
+      'beeg',
+      'xtube',
+      'faphouse',
+      'slutload',
+      'thumbzilla',
+      'onlyfans',
+      'livejasmin',
+      'chaturbate',
+      'stripchat',
+      'bongacams',
+      'myfreecams',
+      'brazzers',
+      'hclips',
+      'rule34',
+      'r34',
+    };
+    return siteNames.contains(w);
+  }
+
+  /// Sprawdza czy URL zawiera jakiekolwiek słowo z rozszerzonej listy
+  bool _matchesPornKeywordsExpanded(String normalizedUrl) {
+    for (final baseWord in pornKeywords) {
+      if (_fuzzyMatchesUrl(baseWord, normalizedUrl)) {
+        debugPrint('🚨 MATCH baseWord: $baseWord → $normalizedUrl');
+        return true;
+      }
+      final trans = _wordTranslations[baseWord];
+      if (trans != null) {
+        for (final t in trans) {
+          if (_fuzzyMatchesUrl(t, normalizedUrl)) {
+            debugPrint(
+              '🚨 MATCH translation: $t (z: $baseWord) → $normalizedUrl',
+            );
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Sprawdza czy URL pasuje do któregoś słowa z blacklisty (+ tłumaczenia)
+  bool _matchesBlacklistExpanded(String normalizedUrl) {
+    for (final entry in blackList) {
+      final override = _wordThresholds[entry];
+      if (override == 0) {
+        if (normalizedUrl.contains(entry.toLowerCase())) return true;
+      } else {
+        if (normalizedUrl.contains(entry.toLowerCase()) ||
+            _fuzzyMatchesUrl(entry, normalizedUrl, overrideThreshold: override))
+          return true;
+      }
+      final translations = _wordTranslations[entry];
+      if (translations != null) {
+        for (final t in translations) {
+          final overrideTrans = _wordThresholds[t];
+          if (_fuzzyMatchesUrl(
+            t,
+            normalizedUrl,
+            overrideThreshold: overrideTrans,
+          ))
+            return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Zwraca dopasowane słowo z blacklisty (+ tłumaczenia) lub null
+  String? _matchedBlacklistWord(String normalizedUrl) {
+    for (final entry in blackList) {
+      final override = _wordThresholds[entry];
+      final baseMatch = override == 0
+          ? normalizedUrl.contains(entry.toLowerCase())
+          : (normalizedUrl.contains(entry.toLowerCase()) ||
+                _fuzzyMatchesUrl(
+                  entry,
+                  normalizedUrl,
+                  overrideThreshold: override,
+                ));
+      if (baseMatch) return entry;
+      final translations = _wordTranslations[entry];
+      if (translations != null) {
+        for (final t in translations) {
+          final overrideTrans = _wordThresholds[t];
+          if (_fuzzyMatchesUrl(
+            t,
+            normalizedUrl,
+            overrideThreshold: overrideTrans,
+          ))
+            return '$entry ($t)';
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<void> _initUserAgent() async {
+    try {
+      final info = DeviceInfoPlugin();
+      final android = await info.androidInfo;
+      final model = android.model; // np. "Samsung Galaxy S23"
+      final version = android.version.release; // np. "14"
+      _userAgent =
+          'Mozilla/5.0 (Linux; Android $version; $model) '
+          'AppleWebKit/537.36 (KHTML, like Gecko) '
+          'Chrome/120.0.0.0 Mobile Safari/537.36';
+      debugPrint('📱 User Agent: $_userAgent');
+    } catch (e) {
+      debugPrint('⚠️ Nie udało się pobrać modelu urządzenia: $e');
+      // Zostaje domyślny _userAgent
+    }
   }
 
   Future<void> loadBlocklists() async {
@@ -384,13 +805,7 @@ class BrowserService extends ChangeNotifier {
       client.connectionTimeout = const Duration(seconds: 30);
       final request = await client.getUrl(Uri.parse(url));
 
-      String userAgent =
-          "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
-      if (controller != null) {
-        userAgent = await controller.getSettings().then(
-          (s) => s?.userAgent ?? userAgent,
-        );
-      }
+      final userAgent = _userAgent;
 
       request.headers.set('User-Agent', userAgent);
       request.headers.set('Accept', 'application/pdf,*/*;q=0.8');
@@ -574,6 +989,69 @@ class BrowserService extends ChangeNotifier {
       };
     }
     adBlockWhitelist = p.getStringList('adblock_whitelist') ?? [];
+    homePageUrl = p.getString('home_page_url') ?? 'https://www.google.com';
+
+    // Wczytaj cache tłumaczeń słów użytkownika
+    final transData = p.getString('word_translations');
+    if (transData != null) {
+      try {
+        final decoded = json.decode(transData) as Map<String, dynamic>;
+        _wordTranslations = decoded.map(
+          (k, v) => MapEntry(k, List<String>.from(v as List)),
+        );
+      } catch (_) {}
+    }
+
+    // Wczytaj cache tłumaczeń pornKeywords — filtruj zatrute wpisy
+    final pornExpanded = p.getStringList('porn_keywords_expanded');
+    if (pornExpanded != null && pornExpanded.isNotEmpty) {
+      final baseNormalized = pornKeywords.map(_normalize).toSet();
+      _pornKeywordsExpanded = pornExpanded.where((w) {
+        // Zawsze przepuść słowa bazowe
+        if (baseNormalized.contains(w)) return true;
+        // Odrzuć nazwy własne i śmieci z Wikidata
+        if (_blockedExpansions.contains(w)) return false;
+        if (w.length > 20) return false;
+        if (w.contains(' ')) return false;
+        if (RegExp(r'[0-9]').hasMatch(w)) return false;
+        return true;
+      }).toSet();
+      // Jeśli filtrowanie usunęło więcej niż 20% — wymusz przebudowę cache
+      if (_pornKeywordsExpanded.length < pornExpanded.length * 0.8) {
+        debugPrint(
+          '⚠️ pornKeywords cache zatrute (${pornExpanded.length - _pornKeywordsExpanded.length} usuniętych), przebudowuję...',
+        );
+        _pornKeywordsExpandedLoaded = false;
+        await p.remove('porn_keywords_expanded');
+      } else {
+        _pornKeywordsExpandedLoaded = true;
+      }
+    }
+    final threshData = p.getString('word_thresholds');
+    if (threshData != null) {
+      try {
+        final decoded = json.decode(threshData) as Map<String, dynamic>;
+        _wordThresholds = decoded.map(
+          (k, v) => MapEntry(k, (v as num).toInt()),
+        );
+      } catch (_) {}
+    }
+    searchEngineUrl = p.getString('search_engine_url') ?? '';
+    searchEngineSelected = p.getBool('search_engine_selected') ?? false;
+
+    // Wczytaj własne wyszukiwarki użytkownika
+    final customEnginesData = p.getString('custom_search_engines');
+    if (customEnginesData != null) {
+      try {
+        final decoded = json.decode(customEnginesData) as List<dynamic>;
+        customSearchEngines = decoded
+            .map((e) => Map<String, String>.from(e as Map))
+            .toList();
+      } catch (_) {}
+    }
+
+    // Wczytaj ukryte wbudowane wyszukiwarki
+    hiddenBuiltinEngines = p.getStringList('hidden_builtin_engines') ?? [];
 
     debugPrint(
       "prefs read basic: ${DateTime.now().difference(t1).inMilliseconds}ms",
@@ -582,6 +1060,9 @@ class BrowserService extends ChangeNotifier {
     blockedExtensions =
         p.getStringList('blocked_extensions') ??
         ["apk", "exe", "bat", "cmd", "sh", "msi", "dmg"];
+
+    wordInputLanguages =
+        p.getStringList('word_input_languages') ?? ['pl', 'en'];
 
     final t2 = DateTime.now();
     final historyData = p.getString('browser_history');
@@ -597,6 +1078,74 @@ class BrowserService extends ChangeNotifier {
   }
 
   // ── Czarna lista ─────────────────────────────
+  Future<void> setHomePage(String url) async {
+    final prefs = await _getPrefs;
+    homePageUrl = url.trim();
+    await prefs.setString('home_page_url', homePageUrl);
+    notifyListeners();
+  }
+
+  Future<void> setSearchEngine(String url) async {
+    searchEngineUrl = url;
+    searchEngineSelected = true; // Ustawiamy na true po wyborze
+
+    final prefs = await _getPrefs;
+    await prefs.setString('search_engine_url', url);
+    await prefs.setBool(
+      'search_engine_selected',
+      true,
+    ); // ZAPISUJEMY stan wyboru
+
+    notifyListeners();
+  }
+
+  // ── Własne wyszukiwarki ──────────────────────────────────────────────────
+
+  Future<void> _saveCustomSearchEngines() async {
+    final prefs = await _getPrefs;
+    await prefs.setString(
+      'custom_search_engines',
+      json.encode(customSearchEngines),
+    );
+  }
+
+  /// Dodaje własną wyszukiwarkę.
+  Future<void> addCustomSearchEngine({
+    required String name,
+    required String homeUrl,
+    required String searchUrl,
+    bool safesearch = false,
+  }) async {
+    customSearchEngines.add({
+      'name': name.trim(),
+      'url': homeUrl.trim(),
+      'searchUrl': searchUrl.trim(),
+      'safesearch': safesearch.toString(),
+    });
+    await _saveCustomSearchEngines();
+    notifyListeners();
+  }
+
+  Future<void> removeCustomSearchEngine(int index) async {
+    // Jeśli usuwana wyszukiwarka jest aktualnie wybrana — resetuj wybór
+    if (customSearchEngines[index]['url'] == searchEngineUrl) {
+      await setSearchEngine('https://www.google.com');
+    }
+    customSearchEngines.removeAt(index);
+    await _saveCustomSearchEngines();
+    notifyListeners();
+  }
+
+  /// Ukrywa wbudowaną wyszukiwarkę z listy.
+  Future<void> hideBuiltinEngine(String url) async {
+    if (!hiddenBuiltinEngines.contains(url)) {
+      hiddenBuiltinEngines.add(url);
+    }
+    final prefs = await _getPrefs;
+    await prefs.setStringList('hidden_builtin_engines', hiddenBuiltinEngines);
+    notifyListeners();
+  }
+
   Future<void> saveBlackList() async {
     final prefs = await _getPrefs;
     await prefs.setStringList('blocked_pages', blackList);
@@ -613,6 +1162,12 @@ class BrowserService extends ChangeNotifier {
     _syncBlackListFromGroups();
     await saveBlackList();
     notifyListeners();
+
+    // Pobierz tłumaczenia w tle (nie blokuje UI)
+    Future.microtask(() async {
+      await fetchAndSaveTranslations(clean);
+      debugPrint('🌐 Tłumaczenia dla "$clean": ${_wordTranslations[clean]}');
+    });
   }
 
   Future<void> removeFromBlackListGroup(String group, String entry) async {
@@ -791,22 +1346,25 @@ class BrowserService extends ChangeNotifier {
         .toList();
   }
 
-  /// Sprawdza czy keyword fuzzy-matchuje którykolwiek token z URL
-  bool _fuzzyMatchesUrl(String keyword, String normalizedUrl) {
+  bool _fuzzyMatchesUrl(
+    String keyword,
+    String normalizedUrl, {
+    int? overrideThreshold,
+  }) {
     final normKeyword = _normalize(keyword);
-    // Pomijamy bardzo krótkie słowa kluczowe (mogłyby być za ogólne)
     if (normKeyword.length < 3) return false;
-    final threshold = _threshold(normKeyword.length);
+    final threshold = overrideThreshold ?? _threshold(normKeyword.length);
     final tokens = _urlTokens(normalizedUrl);
     for (final token in tokens) {
-      // Dokładne dopasowanie (po normalizacji)
       if (token == normKeyword) return true;
-      // Fuzzy — tylko jeśli długości są zbliżone
-      if ((token.length - normKeyword.length).abs() <= threshold) {
+      if (threshold > 0 &&
+          (token.length - normKeyword.length).abs() <= threshold) {
         if (_levenshtein(token, normKeyword) <= threshold) return true;
       }
-      // Zawieranie: długie słowo kluczowe wewnątrz tokenu
-      if (normKeyword.length >= 5 && token.contains(normKeyword)) return true;
+      if (threshold > 0 &&
+          normKeyword.length >= 5 &&
+          token.contains(normKeyword))
+        return true;
     }
     return false;
   }
@@ -859,20 +1417,13 @@ class BrowserService extends ChangeNotifier {
       // Sprawdzenie, czy host zawiera zakazane słowo (np. "hardnsfw.com" zawiera "nsfw")
       // Używamy 'host', a nie 'lowerUrl', żeby uniknąć blokowania np. wyników wyszukiwania
       // w Google, które tylko wyświetlają te słowa w tytule.
-      for (final word in pornKeywords) {
-        if (_fuzzyMatchesUrl(word, normalizedUrl)) {
-          return BlockReason.content;
-        }
+      if (_matchesPornKeywordsExpanded(normalizedUrl)) {
+        return BlockReason.content;
       }
     }
 
-    // 4. Twoja prywatna czarna lista
-    if (blackList.any(
-      (s) =>
-          host.contains(s.toLowerCase()) ||
-          lowerUrl.contains(s.toLowerCase()) ||
-          _fuzzyMatchesUrl(s, normalizedUrl),
-    )) {
+    // 4. Twoja prywatna czarna lista (+ tłumaczenia)
+    if (_matchesBlacklistExpanded(normalizedUrl)) {
       return BlockReason.blacklist;
     }
 
@@ -940,20 +1491,36 @@ class BrowserService extends ChangeNotifier {
       if (remoteBlockedDomains.contains(host)) {
         return (BlockReason.content, host);
       }
-      for (final word in pornKeywords) {
-        if (_fuzzyMatchesUrl(word, normalizedUrl)) {
-          return (BlockReason.content, word);
+      if (_matchesPornKeywordsExpanded(normalizedUrl)) {
+        // Znajdź które słowo pasuje (do wyświetlenia w UI)
+        // Zamiast obecnego bloku "matched", użyj tej samej logiki co _matchesPornKeywordsExpanded
+        String matched = 'treści dla dorosłych';
+
+        // Szukaj w pornKeywords + ich tłumaczeniach (tak samo jak _matchesPornKeywordsExpanded)
+        outer:
+        for (final baseWord in pornKeywords) {
+          if (_fuzzyMatchesUrl(baseWord, normalizedUrl)) {
+            matched = baseWord;
+            break;
+          }
+          final trans = _wordTranslations[baseWord];
+          if (trans != null) {
+            for (final t in trans) {
+              if (_fuzzyMatchesUrl(t, normalizedUrl)) {
+                matched = '$baseWord ($t)';
+                break outer;
+              }
+            }
+          }
         }
+        return (BlockReason.content, matched);
       }
     }
 
-    // 3. Czarna lista
-    for (final s in blackList) {
-      if (host.contains(s.toLowerCase()) ||
-          lowerUrl.contains(s.toLowerCase()) ||
-          _fuzzyMatchesUrl(s, normalizedUrl)) {
-        return (BlockReason.blacklist, s);
-      }
+    // 3. Czarna lista (+ tłumaczenia)
+    final matchedBlacklist = _matchedBlacklistWord(normalizedUrl);
+    if (matchedBlacklist != null) {
+      return (BlockReason.blacklist, matchedBlacklist);
     }
 
     return (BlockReason.none, null);
@@ -1073,7 +1640,6 @@ class BrowserService extends ChangeNotifier {
   }
 
   bool verifyPassword(String entered) {
-    debugPrint("🔑 Weryfikacja hasła: $savedPassword == $entered");
     return entered == savedPassword;
   }
 
@@ -1345,7 +1911,7 @@ class BrowserService extends ChangeNotifier {
 
   // ── Karty ────────────────────────────────────
   void addNewTab() {
-    tabs.add(TabModel(url: "https://www.google.com", loaded: true));
+    tabs.add(TabModel(url: homePageUrl, loaded: true));
     currentTabIndex = tabs.length - 1;
     saveTabs();
     notifyListeners();
@@ -1360,7 +1926,7 @@ class BrowserService extends ChangeNotifier {
   }
 
   void closeAllTabs() {
-    tabs = [TabModel(url: "https://www.google.com")];
+    tabs = [TabModel(url: homePageUrl)];
     currentTabIndex = 0;
     saveTabs();
     notifyListeners();
@@ -1542,6 +2108,25 @@ class BrowserService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> saveWordInputLanguages() async {
+    final prefs = await _getPrefs;
+    await prefs.setStringList('word_input_languages', wordInputLanguages);
+    notifyListeners();
+  }
+
+  void addWordInputLanguage(String langCode) {
+    if (!wordInputLanguages.contains(langCode)) {
+      wordInputLanguages.add(langCode);
+      saveWordInputLanguages();
+    }
+  }
+
+  void removeWordInputLanguage(String langCode) {
+    if (wordInputLanguages.length <= 1) return;
+    wordInputLanguages.remove(langCode);
+    saveWordInputLanguages();
+  }
+
   Future<void> saveBlockedExtensions() async {
     final prefs = await _getPrefs;
     await prefs.setStringList('blocked_extensions', blockedExtensions);
@@ -1586,8 +2171,47 @@ class BrowserService extends ChangeNotifier {
           : 'https://$trimmed';
       return WebUri(formatted);
     } else {
-      final safeParam = adultFilterEnabled ? "&safe=active" : "&safe=off";
-      return WebUri("https://www.google.com/search?q=$trimmed$safeParam");
+      return WebUri(_buildSearchUrl(trimmed));
+    }
+  }
+
+  /// Buduje URL wyszukiwania dla aktualnie wybranej wyszukiwarki
+  String _buildSearchUrl(String query) {
+    final safe = adultFilterEnabled;
+    final encoded = Uri.encodeComponent(query);
+    final engine = searchEngineUrl.isNotEmpty
+        ? searchEngineUrl.toLowerCase()
+        : 'https://www.google.com';
+
+    // Sprawdź czy to własna wyszukiwarka użytkownika
+    final custom = customSearchEngines.firstWhere(
+      (e) => (e['url'] ?? '').toLowerCase() == engine,
+      orElse: () => {},
+    );
+    if (custom.isNotEmpty && custom['searchUrl'] != null) {
+      final customSafe = safe || custom['safesearch'] == 'true';
+      var url = custom['searchUrl']!.replaceAll('%s', encoded);
+      if (customSafe && !url.contains('safe=')) {
+        final sep = url.contains('?') ? '&' : '?';
+        url = '${url}${sep}safe=active';
+      }
+      return url;
+    }
+
+    if (engine.contains('duckduckgo.com')) {
+      return 'https://www.duckduckgo.com/?q=$encoded${safe ? "&kp=1" : ""}';
+    } else if (engine.contains('bing.com')) {
+      return 'https://www.bing.com/search?q=$encoded${safe ? "&adlt=strict" : ""}';
+    } else if (engine.contains('search.brave.com')) {
+      return 'https://search.brave.com/search?q=$encoded${safe ? "&safesearch=strict" : ""}';
+    } else if (engine.contains('startpage.com')) {
+      return 'https://www.startpage.com/search?q=$encoded${safe ? "&safe=1" : ""}';
+    } else if (engine.contains('ecosia.org')) {
+      return 'https://www.ecosia.org/search?q=$encoded${safe ? "&safesearch=strict" : ""}';
+    } else if (engine.contains('yahoo.com')) {
+      return 'https://search.yahoo.com/search?p=$encoded${safe ? "&vm=r" : ""}';
+    } else {
+      return 'https://www.google.com/search?q=$encoded${safe ? "&safe=active" : "&safe=off"}';
     }
   }
 }

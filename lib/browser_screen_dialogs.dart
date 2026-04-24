@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import 'browser_service.dart';
+import 'search_engine_picker.dart';
 import 'password_dialog.dart';
 
 /// Mixin zawierający wszystkie metody dialogów/menu dla BrowserScreen.
@@ -275,10 +276,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                 children: [
                   IconButton(
                     icon: const Icon(Icons.arrow_back, color: Colors.blue),
-                    onPressed: () {
-                      Navigator.pop(context);
-                      showSettingsMenu(svc);
-                    },
+                    onPressed: () => Navigator.pop(context),
                   ),
                   const Icon(Icons.shield, color: Colors.green, size: 22),
                   const SizedBox(width: 8),
@@ -424,134 +422,436 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
 
   // ── Menu ustawień ────────────────────────────────────────────────────────
 
+  String _engineName(String url) {
+    if (url.isEmpty) return 'Nie wybrano';
+    if (url.contains('google.com')) return 'Google';
+    if (url.contains('duckduckgo.com')) return 'DuckDuckGo';
+    if (url.contains('bing.com')) return 'Bing';
+    if (url.contains('brave.com')) return 'Brave Search';
+    if (url.contains('startpage.com')) return 'Startpage';
+    if (url.contains('ecosia.org')) return 'Ecosia';
+    if (url.contains('yahoo.com')) return 'Yahoo';
+    return url;
+  }
+
+  /// Otwiera drawer ustawień (wysuwa się z prawej strony)
   void showSettingsMenu(BrowserService svc) {
-    showModalBottomSheet(
-      context: context,
+    Scaffold.of(context).openEndDrawer();
+  }
+
+  /// Buduje zawartość drawera — wywoływane z browser_screen.dart
+  Widget buildSettingsDrawer(BrowserService svc) {
+    return Drawer(
+      width: 300,
       backgroundColor: const Color(0xFF202124),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 10),
-          ListTile(
-            leading: Icon(
-              Icons.shield,
-              color: svc.adBlockEnabled ? Colors.green : Colors.grey,
-            ),
-            title: const Text("AdBlock", style: TextStyle(color: Colors.white)),
-            subtitle: Text(
-              svc.adBlockEnabled
-                  ? "Włączony • może nie działać na każdej stronie i powodować problemy"
-                  : "Wyłączony",
-              style: TextStyle(
-                color: svc.adBlockEnabled ? Colors.orange : Colors.grey,
-                fontSize: 11,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Nagłówek
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFF3A3A3E))),
               ),
-            ),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            onTap: () {
-              Navigator.pop(context);
-              showAdBlockMenu(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.history, color: Colors.blue),
-            title: const Text(
-              "Historia",
-              style: TextStyle(color: Colors.white),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              showHistory(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.block, color: Colors.redAccent),
-            title: const Text("Blokady", style: TextStyle(color: Colors.white)),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            onTap: () {
-              Navigator.pop(context);
-              _showBlockingMenu(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.add_to_home_screen, color: Colors.blue),
-            title: const Text(
-              'Dodaj skrót do ekranu głównego',
-              style: TextStyle(color: Colors.white),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              addShortcut(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            title: const Text(
-              "Wyczyść dane przeglądania",
-              style: TextStyle(color: Colors.white),
-            ),
-            onTap: () async {
-              Navigator.pop(context);
-              final confirmed = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  backgroundColor: const Color(0xFF202124),
-                  title: const Text(
-                    'Wyczyść dane',
-                    style: TextStyle(color: Colors.white),
+              child: Row(
+                children: [
+                  const Icon(Icons.settings, color: Colors.blue, size: 22),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Ustawienia',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                  content: const Text(
-                    'Usuniesz ciasteczka, cache i dane stron.\nZostaniesz wylogowany ze wszystkich stron.',
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx, false),
-                      child: const Text(
-                        'ANULUJ',
-                        style: TextStyle(color: Colors.grey),
+                  const Spacer(),
+                  if (svc.incognitoMode)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.purple.withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.purple),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.visibility_off,
+                            size: 12,
+                            color: Colors.purple,
+                          ),
+                          SizedBox(width: 4),
+                          Text(
+                            'Incognito',
+                            style: TextStyle(
+                              color: Colors.purple,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx, true),
-                      child: const Text(
-                        'WYCZYŚĆ',
-                        style: TextStyle(color: Colors.redAccent),
+                ],
+              ),
+            ),
+            // Lista opcji
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                children: [
+                  _drawerTile(
+                    icon: Icons.shield,
+                    iconColor: svc.adBlockEnabled ? Colors.green : Colors.grey,
+                    title: 'AdBlock',
+                    subtitle: svc.adBlockEnabled ? 'Włączony' : 'Wyłączony',
+                    onTap: () {
+                      Navigator.pop(context);
+                      showAdBlockMenu(svc);
+                    },
+                  ),
+                  _drawerTile(
+                    icon: Icons.history,
+                    iconColor: Colors.blue,
+                    title: 'Historia',
+                    onTap: () {
+                      Navigator.pop(context);
+                      showHistory(svc);
+                    },
+                  ),
+                  _drawerTile(
+                    icon: Icons.block,
+                    iconColor: Colors.redAccent,
+                    title: 'Blokady',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showBlockingMenu(svc);
+                    },
+                  ),
+                  _drawerTile(
+                    icon: Icons.add_to_home_screen,
+                    iconColor: Colors.blue,
+                    title: 'Dodaj skrót do ekranu głównego',
+                    onTap: () {
+                      Navigator.pop(context);
+                      addShortcut(svc);
+                    },
+                  ),
+                  const Divider(
+                    color: Color(0xFF3A3A3E),
+                    indent: 16,
+                    endIndent: 16,
+                  ),
+                  _drawerTile(
+                    icon: Icons.manage_search,
+                    iconColor: Colors.blue,
+                    title: 'Wyszukiwarka',
+                    subtitle: _engineName(svc.searchEngineUrl),
+                    onTap: () {
+                      Navigator.pop(context);
+                      showDialog(
+                        context: context,
+                        builder: (_) =>
+                            const SearchEnginePicker(onboarding: false),
+                      );
+                    },
+                  ),
+                  _drawerTile(
+                    icon: Icons.home_outlined,
+                    iconColor: Colors.blue,
+                    title: 'Strona startowa',
+                    subtitle: svc.homePageUrl,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showHomePageDialog(svc);
+                    },
+                  ),
+                  const Divider(
+                    color: Color(0xFF3A3A3E),
+                    indent: 16,
+                    endIndent: 16,
+                  ),
+                  _drawerTile(
+                    icon: Icons.delete_outline,
+                    iconColor: Colors.redAccent,
+                    title: 'Wyczyść dane przeglądania',
+                    onTap: () async {
+                      Navigator.pop(context);
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          backgroundColor: const Color(0xFF202124),
+                          title: const Text(
+                            'Wyczyść dane',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                          content: const Text(
+                            'Usuniesz ciasteczka, cache i dane stron. Zostaniesz wylogowany ze wszystkich stron.',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, false),
+                              child: const Text(
+                                'ANULUJ',
+                                style: TextStyle(color: Colors.grey),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, true),
+                              child: const Text(
+                                'WYCZYŚĆ',
+                                style: TextStyle(color: Colors.redAccent),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirmed == true) {
+                        await CookieManager.instance().deleteAllCookies();
+                        await InAppWebViewController.clearAllCache();
+                        svc.currentTab.controller?.reload();
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Dane przeglądania wyczyszczone'),
+                            ),
+                          );
+                        }
+                      }
+                    },
+                  ),
+                  _drawerTile(
+                    icon: Icons.info_outline,
+                    iconColor: Colors.grey,
+                    title: 'O aplikacji',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showAboutDialog(svc);
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _drawerTile({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    String? subtitle,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      leading: Icon(icon, color: iconColor, size: 22),
+      title: Text(
+        title,
+        style: const TextStyle(color: Colors.white, fontSize: 14),
+      ),
+      subtitle: subtitle != null
+          ? Text(
+              subtitle,
+              style: const TextStyle(color: Colors.grey, fontSize: 11),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            )
+          : null,
+      trailing: const Icon(
+        Icons.chevron_right,
+        color: Color(0xFF555555),
+        size: 18,
+      ),
+      onTap: onTap,
+    );
+  }
+
+  void _showHomePageDialog(BrowserService svc) {
+    const engines = [
+      ('Google', 'https://www.google.com', Icons.search),
+      ('DuckDuckGo', 'https://www.duckduckgo.com', Icons.privacy_tip_outlined),
+      ('Bing', 'https://www.bing.com', Icons.search),
+      ('Brave Search', 'https://search.brave.com', Icons.shield_outlined),
+      ('Startpage', 'https://www.startpage.com', Icons.lock_outline),
+      ('Ecosia', 'https://www.ecosia.org', Icons.park_outlined),
+    ];
+
+    final customC = TextEditingController(
+      text: engines.any((e) => e.$2 == svc.homePageUrl) ? '' : svc.homePageUrl,
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF202124),
+          title: const Text(
+            'Strona startowa',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Kafelki wyszukiwarek
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: engines.map((e) {
+                    final isSelected = svc.homePageUrl == e.$2;
+                    return GestureDetector(
+                      onTap: () async {
+                        await svc.setHomePage(e.$2);
+                        customC.clear();
+                        setD(() {});
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 150),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? Colors.blue.withOpacity(0.2)
+                              : const Color(0xFF2A2A2E),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: isSelected
+                                ? Colors.blue
+                                : Colors.grey.withOpacity(0.3),
+                            width: isSelected ? 1.5 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              e.$3,
+                              size: 16,
+                              color: isSelected ? Colors.blue : Colors.grey,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              e.$1,
+                              style: TextStyle(
+                                color: isSelected
+                                    ? Colors.blue
+                                    : Colors.white70,
+                                fontSize: 13,
+                                fontWeight: isSelected
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                            if (isSelected) ...[
+                              const SizedBox(width: 4),
+                              const Icon(
+                                Icons.check,
+                                size: 14,
+                                color: Colors.blue,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+                const Divider(color: Colors.grey),
+                const SizedBox(height: 8),
+                // Własny URL
+                TextField(
+                  controller: customC,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: 'Własny adres (np. https://moja-strona.pl)',
+                    hintStyle: const TextStyle(
+                      color: Colors.grey,
+                      fontSize: 12,
+                    ),
+                    prefixIcon: const Icon(
+                      Icons.link,
+                      color: Colors.grey,
+                      size: 18,
+                    ),
+                    suffixIcon: IconButton(
+                      icon: const Icon(
+                        Icons.check,
+                        color: Colors.blue,
+                        size: 18,
+                      ),
+                      tooltip: 'Ustaw',
+                      onPressed: () async {
+                        final v = customC.text.trim();
+                        if (v.isEmpty) return;
+                        final url = v.startsWith('http') ? v : 'https://$v';
+                        await svc.setHomePage(url);
+                        setD(() {});
+                      },
+                    ),
+                    enabledBorder: const UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.grey),
+                    ),
+                    focusedBorder: const UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blue),
+                    ),
+                  ),
+                  onSubmitted: (v) async {
+                    if (v.trim().isEmpty) return;
+                    final url = v.trim().startsWith('http')
+                        ? v.trim()
+                        : 'https://${v.trim()}';
+                    await svc.setHomePage(url);
+                    setD(() {});
+                  },
+                ),
+                const SizedBox(height: 8),
+                // Aktualna wartość
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.info_outline,
+                      size: 13,
+                      color: Colors.grey,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Aktualnie: ${svc.homePageUrl}',
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 11,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
-              );
-              if (confirmed == true) {
-                await CookieManager.instance().deleteAllCookies();
-                await InAppWebViewController.clearAllCache();
-                svc.currentTab.controller?.reload();
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Dane przeglądania wyczyszczone'),
-                    ),
-                  );
-                }
-              }
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.info_outline, color: Colors.grey),
-            title: const Text(
-              'O aplikacji',
-              style: TextStyle(color: Colors.white),
+              ],
             ),
-            onTap: () {
-              Navigator.pop(context);
-              _showAboutDialog(svc);
-            },
           ),
-          const SizedBox(height: 5),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(
+                'ZAMKNIJ',
+                style: TextStyle(color: Colors.blue),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -779,6 +1079,24 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
             onTap: () {
               Navigator.pop(context);
               _showExtensionsEditor(svc);
+            },
+          ),
+          ListTile(
+            leading: const Icon(
+              Icons.eighteen_up_rating_outlined,
+              color: Colors.orange,
+            ),
+            title: const Text(
+              "Słowa filtra (tłumaczenia)",
+              style: TextStyle(color: Colors.white),
+            ),
+            subtitle: const Text(
+              "Przeglądaj i usuwaj tłumaczenia słów kluczowych",
+              style: TextStyle(color: Colors.grey, fontSize: 11),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              showPornKeywordsViewer(svc);
             },
           ),
           const SizedBox(height: 10),
@@ -1370,53 +1688,168 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                         ),
                                       )
                                     else
-                                      ...entries.map(
-                                        (entry) => ListTile(
-                                          dense: true,
-                                          contentPadding:
-                                              const EdgeInsets.symmetric(
-                                                horizontal: 16,
-                                                vertical: 0,
+                                      ...entries.map((entry) {
+                                        final translations =
+                                            svc.wordTranslations[entry];
+                                        final hasTranslations =
+                                            translations != null &&
+                                            translations.length > 1;
+                                        final progress =
+                                            svc.translationProgress[entry];
+                                        final isLoading = progress != null;
+                                        return Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            ListTile(
+                                              dense: true,
+                                              contentPadding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 16,
+                                                    vertical: 0,
+                                                  ),
+                                              leading: Icon(
+                                                groupName == 'Słowa kluczowe'
+                                                    ? Icons.text_fields
+                                                    : Icons.language,
+                                                color: Colors.grey,
+                                                size: 16,
                                               ),
-                                          leading: Icon(
-                                            groupName == 'Słowa kluczowe'
-                                                ? Icons.text_fields
-                                                : Icons.language,
-                                            color: Colors.grey,
-                                            size: 16,
-                                          ),
-                                          title: Text(
-                                            entry,
-                                            style: const TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 13,
+                                              title: Text(
+                                                entry,
+                                                style: const TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 13,
+                                                ),
+                                              ),
+                                              subtitle: isLoading
+                                                  ? Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        const SizedBox(
+                                                          height: 3,
+                                                        ),
+                                                        Row(
+                                                          children: [
+                                                            Expanded(
+                                                              child: ClipRRect(
+                                                                borderRadius:
+                                                                    BorderRadius.circular(
+                                                                      4,
+                                                                    ),
+                                                                child: LinearProgressIndicator(
+                                                                  value:
+                                                                      progress,
+                                                                  minHeight: 4,
+                                                                  backgroundColor:
+                                                                      Colors
+                                                                          .grey
+                                                                          .shade800,
+                                                                  color: Colors
+                                                                      .blue,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                            const SizedBox(
+                                                              width: 6,
+                                                            ),
+                                                            Text(
+                                                              '${(progress * 100).toInt()}%',
+                                                              style:
+                                                                  const TextStyle(
+                                                                    color: Colors
+                                                                        .blue,
+                                                                    fontSize:
+                                                                        10,
+                                                                  ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ],
+                                                    )
+                                                  : hasTranslations
+                                                  ? Text(
+                                                      '🌐 ${translations.length - 1} tłumaczeń',
+                                                      style: const TextStyle(
+                                                        color: Colors.blue,
+                                                        fontSize: 10,
+                                                      ),
+                                                    )
+                                                  : null,
+                                              trailing: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  // Ikona tłumaczeń — zawsze widoczna, ale za hasłem
+                                                  IconButton(
+                                                    icon: Icon(
+                                                      Icons.translate,
+                                                      color: hasTranslations
+                                                          ? Colors.blue
+                                                          : Colors.grey
+                                                                .withOpacity(
+                                                                  0.4,
+                                                                ),
+                                                      size: 16,
+                                                    ),
+                                                    tooltip:
+                                                        'Tłumaczenia (wymaga hasła)',
+                                                    onPressed: () async {
+                                                      if (svc.savedPassword !=
+                                                          null) {
+                                                        final granted =
+                                                            await _askForPasswordOnly(
+                                                              svc,
+                                                            );
+                                                        if (granted != true)
+                                                          return;
+                                                      }
+                                                      if (!context.mounted)
+                                                        return;
+                                                      _showTranslationsDialog(
+                                                        context: context,
+                                                        svc: svc,
+                                                        word: entry,
+                                                        translations:
+                                                            translations ?? [],
+                                                        onChanged: () =>
+                                                            setDS(() {}),
+                                                      );
+                                                    },
+                                                  ),
+                                                  IconButton(
+                                                    icon: const Icon(
+                                                      Icons.close,
+                                                      color: Colors.redAccent,
+                                                      size: 18,
+                                                    ),
+                                                    onPressed: () async {
+                                                      if (!authenticated) {
+                                                        final granted =
+                                                            await _askForPasswordOnly(
+                                                              svc,
+                                                            );
+                                                        if (granted != true)
+                                                          return;
+                                                        authenticated = true;
+                                                      }
+                                                      await svc
+                                                          .removeFromBlackListGroup(
+                                                            groupName,
+                                                            entry,
+                                                          );
+                                                      setDS(() {});
+                                                    },
+                                                  ),
+                                                ],
+                                              ),
                                             ),
-                                          ),
-                                          trailing: IconButton(
-                                            icon: const Icon(
-                                              Icons.close,
-                                              color: Colors.redAccent,
-                                              size: 18,
-                                            ),
-                                            onPressed: () async {
-                                              if (!authenticated) {
-                                                final granted =
-                                                    await _askForPasswordOnly(
-                                                      svc,
-                                                    );
-                                                if (granted != true) return;
-                                                authenticated = true;
-                                              }
-                                              await svc
-                                                  .removeFromBlackListGroup(
-                                                    groupName,
-                                                    entry,
-                                                  );
-                                              setDS(() {});
-                                            },
-                                          ),
-                                        ),
-                                      ),
+                                          ],
+                                        );
+                                      }),
                                   ],
                                 ),
                               );
@@ -1437,6 +1870,596 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
             ],
           );
         },
+      ),
+    );
+  }
+
+  // ── Dialog tłumaczeń (za hasłem, z usuwaniem) ──────────────────────────────
+
+  static String _thresholdLabel(int t) {
+    switch (t) {
+      case 0:
+        return 'Dokładne (0) — tylko identyczne';
+      case 1:
+        return 'Luźne (1) — 1 literka różnicy';
+      case 2:
+        return 'Średnie (2) — 2 literki różnicy';
+      case 3:
+        return 'Bardzo luźne (3) — 3 literki różnicy';
+      default:
+        return 'Niestandardowe ($t)';
+    }
+  }
+
+  void _showTranslationsDialog({
+    required BuildContext context,
+    required BrowserService svc,
+    required String word,
+    required List<String> translations,
+    required VoidCallback onChanged,
+  }) {
+    showDialog(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setTD) {
+          final current = List<String>.from(
+            svc.wordTranslations[word] ?? translations,
+          );
+          final wordThresh = svc.wordThresholds[word] ?? -1; // -1 = auto
+          return AlertDialog(
+            backgroundColor: const Color(0xFF202124),
+            title: Row(
+              children: [
+                const Icon(Icons.translate, color: Colors.blue, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Tłumaczenia: "$word"',
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
+                  ),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ── Próg dla słowa bazowego ──
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF2A2A2E),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.tune,
+                                color: Colors.blue,
+                                size: 14,
+                              ),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'Próg dopasowania słowa bazowego',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            wordThresh < 0
+                                ? 'Auto (domyślny dla długości słowa)'
+                                : _thresholdLabel(wordThresh),
+                            style: TextStyle(
+                              color: wordThresh < 0 ? Colors.grey : Colors.blue,
+                              fontSize: 11,
+                            ),
+                          ),
+                          Row(
+                            children: [
+                              const Text(
+                                'Auto',
+                                style: TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 10,
+                                ),
+                              ),
+                              Expanded(
+                                child: Slider(
+                                  value: (wordThresh < 0 ? -1 : wordThresh)
+                                      .toDouble(),
+                                  min: -1,
+                                  max: 3,
+                                  divisions: 4,
+                                  activeColor: Colors.blue,
+                                  inactiveColor: Colors.grey.shade800,
+                                  onChanged: (v) async {
+                                    await svc.setWordThreshold(word, v.round());
+                                    setTD(() {});
+                                    onChanged();
+                                  },
+                                ),
+                              ),
+                              const Text(
+                                '3',
+                                style: TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    // ── Tłumaczenia z chipakami i suwakami ──
+                    if (current.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: Text(
+                          'Brak tłumaczeń.',
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                      )
+                    else
+                      ...current.map((t) {
+                        final tThresh = svc.wordThresholds[t] ?? -1;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF2A2A2E),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: Colors.blue.withOpacity(0.2),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      t,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                    icon: const Icon(
+                                      Icons.close,
+                                      color: Colors.redAccent,
+                                      size: 16,
+                                    ),
+                                    onPressed: () async {
+                                      final updated = List<String>.from(
+                                        svc.wordTranslations[word] ?? [],
+                                      )..remove(t);
+                                      svc.wordTranslations[word] = updated;
+                                      final prefs = await svc.getPrefsPublic();
+                                      await prefs.setString(
+                                        'word_translations',
+                                        svc.wordTranslationsJson,
+                                      );
+                                      setTD(() {});
+                                      onChanged();
+                                    },
+                                  ),
+                                ],
+                              ),
+                              Row(
+                                children: [
+                                  const Text(
+                                    'Auto',
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: Slider(
+                                      value: (tThresh < 0 ? -1 : tThresh)
+                                          .toDouble(),
+                                      min: -1,
+                                      max: 3,
+                                      divisions: 4,
+                                      activeColor: Colors.blueGrey,
+                                      inactiveColor: Colors.grey.shade800,
+                                      onChanged: (v) async {
+                                        await svc.setWordThreshold(
+                                          t,
+                                          v.round(),
+                                        );
+                                        setTD(() {});
+                                      },
+                                    ),
+                                  ),
+                                  const Text(
+                                    '3',
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Text(
+                                tThresh < 0 ? 'Auto' : _thresholdLabel(tThresh),
+                                style: TextStyle(
+                                  color: tThresh < 0
+                                      ? Colors.grey
+                                      : Colors.blueGrey,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  'ZAMKNIJ',
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// Dialog tłumaczeń dla pornKeywords — z progami i usuwaniem
+  void _showPornKeywordTranslationsDialog({
+    required BuildContext context,
+    required BrowserService svc,
+    required String word,
+  }) {
+    showDialog(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setTD) {
+          final current = List<String>.from(svc.wordTranslations[word] ?? []);
+          final wordThresh = svc.wordThresholds[word] ?? -1;
+          return AlertDialog(
+            backgroundColor: const Color(0xFF202124),
+            title: Row(
+              children: [
+                const Icon(Icons.translate, color: Colors.orange, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '"$word"',
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
+                  ),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Próg dla słowa bazowego
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF2A2A2E),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: Colors.orange.withOpacity(0.3),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.tune,
+                                color: Colors.orange,
+                                size: 14,
+                              ),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'Próg dopasowania słowa bazowego',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            wordThresh < 0
+                                ? 'Auto'
+                                : _thresholdLabel(wordThresh),
+                            style: TextStyle(
+                              color: wordThresh < 0
+                                  ? Colors.grey
+                                  : Colors.orange,
+                              fontSize: 11,
+                            ),
+                          ),
+                          Row(
+                            children: [
+                              const Text(
+                                'Auto',
+                                style: TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 10,
+                                ),
+                              ),
+                              Expanded(
+                                child: Slider(
+                                  value: wordThresh.toDouble().clamp(-1, 3),
+                                  min: -1,
+                                  max: 3,
+                                  divisions: 4,
+                                  activeColor: Colors.orange,
+                                  inactiveColor: Colors.grey.shade800,
+                                  onChanged: (v) async {
+                                    await svc.setWordThreshold(word, v.round());
+                                    setTD(() {});
+                                  },
+                                ),
+                              ),
+                              const Text(
+                                '3',
+                                style: TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (current.isEmpty)
+                      const Text(
+                        'Brak tłumaczeń — słowo blokowane tylko w wersji oryginalnej.',
+                        style: TextStyle(color: Colors.grey, fontSize: 12),
+                      )
+                    else
+                      ...current.map((t) {
+                        final tThresh = svc.wordThresholds[t] ?? -1;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF2A2A2E),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: Colors.orange.withOpacity(0.2),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      t,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                    icon: const Icon(
+                                      Icons.close,
+                                      color: Colors.redAccent,
+                                      size: 16,
+                                    ),
+                                    onPressed: () async {
+                                      final updated = List<String>.from(
+                                        svc.wordTranslations[word] ?? [],
+                                      )..remove(t);
+                                      svc.wordTranslations[word] = updated;
+                                      final prefs = await svc.getPrefsPublic();
+                                      await prefs.setString(
+                                        'word_translations',
+                                        svc.wordTranslationsJson,
+                                      );
+                                      setTD(() {});
+                                    },
+                                  ),
+                                ],
+                              ),
+                              Row(
+                                children: [
+                                  const Text(
+                                    'Auto',
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: Slider(
+                                      value: tThresh.toDouble().clamp(-1, 3),
+                                      min: -1,
+                                      max: 3,
+                                      divisions: 4,
+                                      activeColor: Colors.orange.shade300,
+                                      inactiveColor: Colors.grey.shade800,
+                                      onChanged: (v) async {
+                                        await svc.setWordThreshold(
+                                          t,
+                                          v.round(),
+                                        );
+                                        setTD(() {});
+                                      },
+                                    ),
+                                  ),
+                                  const Text(
+                                    '3',
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Text(
+                                tThresh < 0 ? 'Auto' : _thresholdLabel(tThresh),
+                                style: TextStyle(
+                                  color: tThresh < 0
+                                      ? Colors.grey
+                                      : Colors.orange,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  'ZAMKNIJ',
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// Pokazuje dialog z listą pornKeywords i ich tłumaczeniami — wymaga hasła
+  void showPornKeywordsViewer(BrowserService svc) async {
+    if (svc.savedPassword != null) {
+      final granted = await _askForPasswordOnly(svc);
+      if (granted != true) return;
+    }
+    if (!context.mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setPKD) => AlertDialog(
+          backgroundColor: const Color(0xFF202124),
+          title: const Row(
+            children: [
+              Icon(
+                Icons.eighteen_up_rating_outlined,
+                color: Colors.orange,
+                size: 20,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'Słowa kluczowe filtra',
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: ListView.builder(
+              itemCount: svc.pornKeywords.length,
+              itemBuilder: (context, index) {
+                final word = svc.pornKeywords[index];
+                final translations = svc.wordTranslations[word];
+                final hasT = translations != null && translations.isNotEmpty;
+                return ListTile(
+                  dense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  leading: const Icon(
+                    Icons.block,
+                    color: Colors.orange,
+                    size: 16,
+                  ),
+                  title: Text(
+                    word,
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  subtitle: hasT
+                      ? Text(
+                          '${translations.length} tłumaczeń',
+                          style: const TextStyle(
+                            color: Colors.orange,
+                            fontSize: 10,
+                          ),
+                        )
+                      : null,
+                  trailing: IconButton(
+                    icon: Icon(
+                      Icons.translate,
+                      color: hasT
+                          ? Colors.orange
+                          : Colors.grey.withOpacity(0.4),
+                      size: 16,
+                    ),
+                    tooltip: 'Pokaż / edytuj tłumaczenia',
+                    onPressed: () {
+                      _showPornKeywordTranslationsDialog(
+                        context: context,
+                        svc: svc,
+                        word: word,
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text(
+                'ZAMKNIJ',
+                style: TextStyle(color: Colors.blue),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -6,7 +6,14 @@
         android:requestLegacyExternalStorage="true"
         android:networkSecurityConfig="@xml/network_security_config" 
         android:importantForAutofill="yes"
-        android:usesCleartextTraffic="true">
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:manageSpaceActivity=".ManageSpaceActivity"> 
+        
+        <activity
+        android:name=".ManageSpaceActivity"
+        android:exported="true" />
+    
         <activity
             android:importantForAutofill="yes"
             android:name=".MainActivity"

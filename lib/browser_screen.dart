@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 import 'browser_service.dart';
+import 'search_engine_picker.dart';
 import 'browser_screen_dialogs.dart';
 import 'webview_tab.dart';
 import 'qr_scanner_screen.dart';
@@ -31,6 +32,16 @@ class _BrowserScreenState extends State<BrowserScreen>
       svc.addListener(_handlePendingShortcut);
       svc.addListener(_syncUrlBar);
       _handlePendingShortcut();
+      // Pokaż onboarding wyboru wyszukiwarki jeśli jeszcze nie wybrano
+      // Sprawdzamy obie flagi — searchEngineSelected może być false przed loadData()
+      if (!svc.searchEngineSelected && svc.searchEngineUrl.isEmpty) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => const SearchEnginePicker(onboarding: true),
+            fullscreenDialog: true,
+          ),
+        );
+      }
     });
   }
 
@@ -166,6 +177,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           backgroundColor: svc.incognitoMode
               ? const Color.fromARGB(255, 116, 31, 162)
               : Colors.black,
+          endDrawer: buildSettingsDrawer(svc),
           body: Column(
             children: [
               SafeArea(
@@ -408,12 +420,14 @@ class _BrowserScreenState extends State<BrowserScreen>
                             tooltip: 'Skaner QR',
                             onPressed: () => _openQrScanner(svc),
                           ),
-                          IconButton(
-                            icon: const Icon(
-                              Icons.more_vert,
-                              color: Colors.grey,
+                          Builder(
+                            builder: (ctx) => IconButton(
+                              icon: const Icon(
+                                Icons.more_vert,
+                                color: Colors.grey,
+                              ),
+                              onPressed: () => Scaffold.of(ctx).openEndDrawer(),
                             ),
-                            onPressed: () => showSettingsMenu(svc),
                           ),
                         ],
                       ),

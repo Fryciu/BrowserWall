@@ -70,7 +70,7 @@ class _WebViewTabState extends State<WebViewTab>
     super.initState();
     _lastAdBlockVersion = widget.svc.adBlockVersion;
     widget.svc.addListener(_onSvcChanged);
-    CookieManager.instance().deleteAllCookies();
+    //CookieManager.instance().deleteAllCookies();
   }
 
   @override
@@ -126,15 +126,14 @@ class _WebViewTabState extends State<WebViewTab>
             javaScriptEnabled: true,
             allowContentAccess: true,
             javaScriptCanOpenWindowsAutomatically: true,
-            userAgent:
-                "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            userAgent: svc.userAgent,
             mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
             cacheMode: CacheMode.LOAD_DEFAULT,
             useOnDownloadStart: true,
             hardwareAcceleration: true,
             allowFileAccessFromFileURLs: true,
             allowUniversalAccessFromFileURLs: true,
-            useHybridComposition: true,
+            useHybridComposition: false,
             transparentBackground: false,
           ),
           onPermissionRequest: (controller, request) async {
@@ -229,19 +228,11 @@ class _WebViewTabState extends State<WebViewTab>
                 }
               }
               await svc.saveTabs();
-              svc.notifyListeners();
+              svc.notifyUI(); // odświeża URL bar przez publiczne API
             } else {
               debugPrint('⚠️ onLoadStop skipped url: $urlString');
             }
 
-            CookieManager cookieManager = CookieManager.instance();
-            await cookieManager.setCookie(
-              url: u,
-              name: "test",
-              value: "value",
-              isHttpOnly: false,
-            );
-            await Future.delayed(const Duration(milliseconds: 500));
             await svc.addToHistory(await c.getTitle(), urlString);
           },
           onLoadStart: (controller, url) async {
