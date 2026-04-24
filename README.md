@@ -43,3 +43,4 @@ Persistence: shared_preferences for blacklist and security configurations.
 - I'm planning on testing this browser and if for a month there are no challenges in using it, then I'll implement the english language into it.
 - Adding icons for browsers
 - Testing adding custom browsers as main ones.
+- Defragmentation of files (3100 lines is too much)
