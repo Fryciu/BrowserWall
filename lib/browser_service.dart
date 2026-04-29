@@ -694,13 +694,24 @@ class BrowserService extends ChangeNotifier {
   List<Map<String, String>> shortcuts = [];
 
   Future<void> loadShortcuts() async {
-    final prefs = await _getPrefs;
-    final data = prefs.getString('shortcuts');
-    if (data != null) {
-      final decoded = json.decode(data) as List<dynamic>;
-      shortcuts = decoded
-          .map((e) => Map<String, String>.from(e as Map))
-          .toList();
+    try {
+      final prefs = await _getPrefs;
+      final data = prefs.getString('shortcuts');
+
+      if (data != null) {
+        final List<dynamic> decoded = json.decode(data);
+
+        // Bezpieczna konwersja dynamicznych map na Map<String, String>
+        shortcuts = decoded.map((item) {
+          final map = item as Map<String, dynamic>;
+          return map.map((key, value) => MapEntry(key, value.toString()));
+        }).toList();
+
+        notifyListeners(); // Pamiętaj o odświeżeniu UI po załadowaniu!
+      }
+    } catch (e) {
+      print("Błąd podczas ładowania skrótów: $e");
+      shortcuts = []; // Reset w razie błędu danych
     }
   }
 
@@ -708,6 +719,7 @@ class BrowserService extends ChangeNotifier {
     shortcuts.add({'name': name, 'url': url});
     final prefs = await _getPrefs;
     await prefs.setString('shortcuts', json.encode(shortcuts));
+
     notifyListeners();
   }
 
@@ -1056,6 +1068,7 @@ class BrowserService extends ChangeNotifier {
     debugPrint(
       "prefs read basic: ${DateTime.now().difference(t1).inMilliseconds}ms",
     );
+    p.setBool("download_enabled", true);
     downloadEnabled = p.getBool('download_enabled') ?? false;
     blockedExtensions =
         p.getStringList('blocked_extensions') ??
@@ -1917,6 +1930,13 @@ class BrowserService extends ChangeNotifier {
     notifyListeners();
   }
 
+  void addTabWithUrl(String url) {
+    tabs.add(TabModel(url: url, loaded: true));
+    currentTabIndex = tabs.length - 1;
+    saveTabs();
+    notifyListeners();
+  }
+
   void closeTab(int index) {
     if (tabs.length <= 1) return;
     tabs.removeAt(index);
@@ -2102,6 +2122,7 @@ class BrowserService extends ChangeNotifier {
   ];
 
   Future<void> setDownloadEnabled(bool value) async {
+    //tylko do debugu
     final prefs = await _getPrefs;
     await prefs.setBool('download_enabled', value);
     downloadEnabled = value;

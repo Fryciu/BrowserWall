@@ -34,11 +34,24 @@ void main() async {
     if (call.method == 'onShortcutUrl') {
       final url = call.arguments as String;
       print("onShortcutUrl received: $url");
+
+      // Ignoruj OAuth URL-e z custom scheme redirect_uri —
+      // MainActivity nie powinna ich tu przesyłać, ale dla pewności
+      final uri = Uri.tryParse(url);
+      final redirectUri = uri?.queryParameters['redirect_uri'] ?? '';
+      if (redirectUri.isNotEmpty &&
+          !redirectUri.startsWith('http') &&
+          !redirectUri.startsWith('https')) {
+        print(
+          "onShortcutUrl: ignoruję OAuth URL z custom redirect_uri: $redirectUri",
+        );
+        return;
+      }
+
       svc.pendingShortcutUrl = url;
       svc.notifyShortcut();
     }
   });
-
   svc.init();
 
   runApp(

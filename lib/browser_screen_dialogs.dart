@@ -203,7 +203,14 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
 
   Future<void> addShortcut(BrowserService svc) async {
     final currentUrl = svc.currentTab.url;
-    String name = svc.currentTab.title;
+    // Odczytaj tytuł z kontrolera WebView jeśli dostępny
+    final controller = svc.currentTab.controller;
+    final liveTitle = controller != null
+        ? (await controller.getTitle() ?? svc.currentTab.title)
+        : svc.currentTab.title;
+
+    final nameController = TextEditingController(text: liveTitle);
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -212,8 +219,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
         content: TextField(
           style: const TextStyle(color: Colors.white),
           autofocus: true,
-          controller: TextEditingController(text: name),
-          onChanged: (v) => name = v,
+          controller: nameController, // ← ten sam kontroler
           decoration: const InputDecoration(
             hintText: 'Nazwa skrótu',
             hintStyle: TextStyle(color: Colors.grey),
@@ -235,6 +241,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
       ),
     );
 
+    final name = nameController.text.trim(); // ← odczyt PO zamknięciu dialogu
     if (confirmed != true || name.isEmpty) return;
 
     try {
@@ -246,8 +253,8 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Nie udało się dodać skrótu'),
+          SnackBar(
+            content: Text('Nie udało się dodać skrótu $e'),
             backgroundColor: Colors.redAccent,
             behavior: SnackBarBehavior.floating,
           ),
