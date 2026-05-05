@@ -1959,6 +1959,56 @@ class BrowserService extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateTabMetadata(
+    InAppWebViewController controller, {
+    String? url,
+    String? title,
+  }) {
+    final index = tabs.indexWhere((t) => t.controller == controller);
+    if (index == -1) return;
+
+    var changed = false;
+    if (url != null &&
+        url.isNotEmpty &&
+        !url.startsWith('about:') &&
+        tabs[index].url != url) {
+      tabs[index].url = url;
+      changed = true;
+    }
+
+    final cleanTitle = title?.trim();
+    if (_isUsableTabTitle(cleanTitle) && cleanTitle != tabs[index].title) {
+      tabs[index].title = cleanTitle!;
+      changed = true;
+    } else if (!_isUsableTabTitle(tabs[index].title)) {
+      final fallbackTitle = _titleFromUrl(tabs[index].url);
+      if (fallbackTitle != tabs[index].title) {
+        tabs[index].title = fallbackTitle;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      saveTabs();
+      notifyListeners();
+    }
+  }
+
+  bool _isUsableTabTitle(String? title) {
+    final value = title?.trim();
+    if (value == null || value.isEmpty) return false;
+    final lower = value.toLowerCase();
+    return lower != 'about:blank' &&
+        lower != 'about:blank#blocked' &&
+        !lower.startsWith('about:');
+  }
+
+  String _titleFromUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.host.isEmpty) return 'Nowa karta';
+    return uri.host.startsWith('www.') ? uri.host.substring(4) : uri.host;
+  }
+
   Future<void> clearHistoryInRange(
     DateTime fromDate,
     DateTime toDate, {
@@ -2073,6 +2123,12 @@ class BrowserService extends ChangeNotifier {
           url = liveUrl;
           t.url = liveUrl; // synchronizuj też pole
         }
+        final liveTitle = (await t.controller!.getTitle())?.trim();
+        if (_isUsableTabTitle(liveTitle)) {
+          t.title = liveTitle!;
+        } else if (!_isUsableTabTitle(t.title)) {
+          t.title = _titleFromUrl(url);
+        }
       }
       tabsData.add({'url': url, 'title': t.title});
     }
@@ -2094,7 +2150,9 @@ class BrowserService extends ChangeNotifier {
             .map(
               (e) => TabModel(
                 url: e['url'] as String,
-                title: e['title'] as String,
+                title: _isUsableTabTitle(e['title'] as String?)
+                    ? e['title'] as String
+                    : _titleFromUrl(e['url'] as String),
                 loaded: false,
               ),
             )

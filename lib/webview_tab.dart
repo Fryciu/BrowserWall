@@ -35,6 +35,10 @@ class WebViewTab extends StatefulWidget {
 
 class _WebViewTabState extends State<WebViewTab>
     with AutomaticKeepAliveClientMixin {
+  static const MethodChannel _customSchemeChannel = MethodChannel(
+    'app/custom_scheme',
+  );
+
   @override
   bool get wantKeepAlive => true;
 
@@ -47,6 +51,44 @@ class _WebViewTabState extends State<WebViewTab>
     if (svc.adBlockVersion != _lastAdBlockVersion) {
       _lastAdBlockVersion = svc.adBlockVersion;
       if (mounted) setState(() => _webViewKey++);
+    }
+  }
+
+  Future<bool> _openExternalUrl(String urlString) async {
+    try {
+      if (Platform.isAndroid) {
+        final opened = await _customSchemeChannel.invokeMethod<bool>(
+          'openExternalUrl',
+          urlString,
+        );
+        if (opened == true) return true;
+      }
+    } catch (e) {
+      debugPrint('Native openExternalUrl error: $e');
+    }
+
+    try {
+      return await launchUrl(
+        Uri.parse(urlString),
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (e) {
+      debugPrint('launchUrl error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _openUrlInPackage(String urlString, String packageName) async {
+    try {
+      if (!Platform.isAndroid) return false;
+      final opened = await _customSchemeChannel.invokeMethod<bool>(
+        'openUrlInPackage',
+        {'url': urlString, 'package': packageName},
+      );
+      return opened == true;
+    } catch (e) {
+      debugPrint('Native openUrlInPackage error: $e');
+      return false;
     }
   }
 
@@ -107,8 +149,31 @@ class _WebViewTabState extends State<WebViewTab>
           onProgressChanged: (controller, progress) {
             if (mounted) setState(() => _progress = progress / 100);
           },
+          onTitleChanged: (controller, title) {
+            svc.updateTabMetadata(controller, title: title);
+          },
           onWebViewCreated: (c) {
             tab.controller = c;
+
+            // Handler dla custom scheme redirectów z JavaScript (np. OAuth)
+            c.addJavaScriptHandler(
+              handlerName: 'customScheme',
+              callback: (args) async {
+                if (args.isEmpty) return;
+                final url = args[0] as String;
+                debugPrint('🔗 JS customScheme: $url');
+                await _openExternalUrl(url);
+              },
+            );
+
+            // Nasłuchuj na custom scheme z natywnego WebViewClient
+            _customSchemeChannel.setMethodCallHandler((call) async {
+              if (call.method == 'onCustomScheme') {
+                final url = call.arguments as String;
+                debugPrint('🔗 Native custom scheme: $url');
+                await _openExternalUrl(url);
+              }
+            });
             Future.microtask(() {
               String urlToLoad = tab.url;
               if (svc.pendingShortcutUrl != null &&
@@ -144,6 +209,30 @@ class _WebViewTabState extends State<WebViewTab>
               }
             });
           },
+          onLoadStart: (c, url) async {
+            debugPrint('onLoadStart: ${url?.toString()}');
+            if (url == null) return;
+            final urlString = url.toString();
+
+            if (!urlString.startsWith('http://') &&
+                !urlString.startsWith('https://') &&
+                !urlString.startsWith('about:') &&
+                !urlString.startsWith('file:') &&
+                !urlString.startsWith('data:')) {
+              debugPrint('🔗 onLoadStart custom schemat: $urlString');
+              await _openExternalUrl(urlString);
+              c.stopLoading();
+            }
+          },
+          onLoadResourceWithCustomScheme: (c, request) async {
+            final urlString = request.url.toString();
+            debugPrint('🔗 onLoadResourceWithCustomScheme: $urlString');
+            await _openExternalUrl(urlString);
+            return CustomSchemeResponse(
+              data: Uint8List(0),
+              contentType: 'text/plain',
+            );
+          },
           onReceivedError: (controller, request, error) async {
             final urlString = request.url.toString();
             debugPrint('❌ onReceivedError: $urlString — ${error.description}');
@@ -152,31 +241,111 @@ class _WebViewTabState extends State<WebViewTab>
             if (!urlString.startsWith('http://') &&
                 !urlString.startsWith('https://')) {
               debugPrint('🔗 Custom schemat w onReceivedError: $urlString');
-              try {
-                final uri = Uri.parse(urlString);
-                await launchUrl(uri, mode: LaunchMode.externalApplication);
-              } catch (e) {
-                debugPrint('❌ Błąd launchUrl w onReceivedError: $e');
-              }
+              await _openExternalUrl(urlString);
             }
           },
           onLoadStop: (c, u) async {
             if (u == null) return;
             final urlString = u.toString();
 
+            // Wstrzyknij agresywny interceptor JS dla custom scheme redirectów (np. OAuth)
+            await c.evaluateJavascript(
+              source: '''
+              (function() {
+                if (window.__customSchemeInjected) return;
+                window.__customSchemeInjected = true;
+
+                function isCustom(url) {
+                  if (!url || typeof url !== "string") return false;
+                  return !url.startsWith("http://") &&
+                         !url.startsWith("https://") &&
+                         !url.startsWith("about:") &&
+                         !url.startsWith("javascript:") &&
+                         !url.startsWith("/") &&
+                         !url.startsWith("?") &&
+                         !url.startsWith("#") &&
+                         url.indexOf("://") > 0;
+                }
+
+                function sendCustom(url) {
+                  try { window.flutter_inappwebview.callHandler("customScheme", url); } catch(e) {}
+                }
+
+                // Interceptory location
+                var origAssign = window.location.assign.bind(window.location);
+                var origReplace = window.location.replace.bind(window.location);
+                try {
+                  Object.defineProperty(window.location, "href", {
+                    set: function(url) { isCustom(url) ? sendCustom(url) : origAssign(url); }
+                  });
+                } catch(e) {}
+                window.location.assign = function(url) { isCustom(url) ? sendCustom(url) : origAssign(url); };
+                window.location.replace = function(url) { isCustom(url) ? sendCustom(url) : origReplace(url); };
+
+                // Interceptor fetch — GitHub może używać fetch do zainicjowania redirect
+                if (window.fetch) {
+                  var origFetch = window.fetch.bind(window);
+                  window.fetch = function(input, init) {
+                    var url = typeof input === "string" ? input : (input && input.url);
+                    if (isCustom(url)) { sendCustom(url); return Promise.resolve(new Response("", {status: 200})); }
+                    return origFetch(input, init);
+                  };
+                }
+
+                // Interceptor XMLHttpRequest
+                var origXHROpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                  if (isCustom(url)) { sendCustom(url); return; }
+                  return origXHROpen.apply(this, arguments);
+                };
+
+                // Polling — sprawdzaj location.href co 150ms przez 30s po załadowaniu
+                var _lastHref = location.href;
+                var _pollCount = 0;
+                var _pollTimer = setInterval(function() {
+                  _pollCount++;
+                  if (_pollCount > 200) { clearInterval(_pollTimer); return; }
+                  try {
+                    var h = location.href;
+                    if (h !== _lastHref) {
+                      _lastHref = h;
+                      if (isCustom(h)) { sendCustom(h); clearInterval(_pollTimer); }
+                    }
+                  } catch(e) {
+                    // SecurityError przy cross-origin — ignoruj
+                  }
+                }, 150);
+
+                // MutationObserver na meta refresh i iframes
+                var obs = new MutationObserver(function(muts) {
+                  muts.forEach(function(m) {
+                    m.addedNodes.forEach(function(n) {
+                      if (n.tagName === "META" && n.httpEquiv && n.httpEquiv.toLowerCase() === "refresh") {
+                        var content = n.content || "";
+                        var match = content.match(/url=(.+)/i);
+                        if (match && isCustom(match[1].trim())) sendCustom(match[1].trim());
+                      }
+                      if (n.tagName === "A" && isCustom(n.href)) {
+                        n.addEventListener("click", function(e) { e.preventDefault(); sendCustom(n.href); });
+                      }
+                    });
+                  });
+                });
+                obs.observe(document.documentElement, { childList: true, subtree: true });
+
+              })();
+            ''',
+            );
+
             if (urlString.isNotEmpty &&
                 !urlString.startsWith("about:") &&
                 urlString != "about:blank") {
-              tab.url = urlString;
-              final idx = svc.tabs.indexWhere((t) => t.controller == c);
-              if (idx != -1) {
-                svc.tabs[idx].url = urlString;
-                if (idx == svc.currentTabIndex) {
-                  widget.urlController.text = urlString;
-                }
+              final title = await c.getTitle();
+              svc.updateTabMetadata(c, url: urlString, title: title);
+              if (svc.tabs.indexWhere((t) => t.controller == c) ==
+                  svc.currentTabIndex) {
+                widget.urlController.text = urlString;
               }
-              await svc.saveTabs();
-              svc.notifyUI();
             }
             await svc.addToHistory(await c.getTitle(), urlString);
           },
@@ -349,7 +518,7 @@ class _WebViewTabState extends State<WebViewTab>
             final url = act.request.url;
             if (url == null) return NavigationActionPolicy.ALLOW;
             final urlString = url.toString();
-
+            debugPrint('🔀 shouldOverride: $urlString');
             // 1. Schematy wewnętrzne — przepuść bez sprawdzania
             if (urlString.startsWith('about:') ||
                 urlString.startsWith('file:') ||
@@ -364,19 +533,16 @@ class _WebViewTabState extends State<WebViewTab>
 
             if (!isWebProtocol) {
               debugPrint('🔗 Custom schemat: $urlString');
-              try {
-                await launchUrl(url, mode: LaunchMode.externalApplication);
-              } catch (e) {
-                debugPrint('❌ Nie można otworzyć: $e');
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Nie można otworzyć tego linku. Wymagana aplikacja może nie być zainstalowana.',
-                      ),
+              final messenger = ScaffoldMessenger.of(context);
+              final opened = await _openExternalUrl(urlString);
+              if (!opened) {
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Nie mozna otworzyc tego linku. Wymagana aplikacja moze nie byc zainstalowana.',
                     ),
-                  );
-                }
+                  ),
+                );
               }
               return NavigationActionPolicy.CANCEL;
             }
