@@ -39,8 +39,12 @@ State Management: Ephemeral State (setState) — Optimized for low memory overhe
 
 Persistence: shared_preferences for blacklist and security configurations.
 
-## 🚧 Current plans
-- I'm planning on testing this browser and if for a month there are no challenges in using it, then I'll implement the english language into it.
-- Adding icons for browsers
+
+## 🚧 Current Bugs
+- Github Mobile (and other apps too probably) cannot open new tab to log in and authenticate
+- Cannot make a home widget from app. You can make a home widget from widgets tab on android, however making them from app would be easier
+
+## 🎯 Current plans
+- Fixing these bugs, duh
 - Testing adding custom browsers as main ones.
 - Defragmentation of files (3100 lines is too much)
