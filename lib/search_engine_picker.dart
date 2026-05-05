@@ -3,54 +3,46 @@ import 'package:provider/provider.dart';
 import 'browser_service.dart';
 
 // ── Wbudowane wyszukiwarki ───────────────────────────────────────────────────
-
 final _builtinEngines = [
   (
     name: 'Google',
     url: 'https://www.google.com',
-    icon: "assets/icon.png",
+    icon: "assets/google_search_icon.png",
     color: Color(0xFF4285F4),
     desc: 'Najpopularniejsza wyszukiwarka',
   ),
   (
     name: 'DuckDuckGo',
     url: 'https://www.duckduckgo.com',
-    icon: "assets/icon.png",
+    icon: "assets/duck_search_icon.png",
     color: Color(0xFFDE5833),
     desc: 'Prywatność przede wszystkim',
   ),
   (
     name: 'Bing',
     url: 'https://www.bing.com',
-    icon: "assets/icon.png",
+    icon: "assets/bing_search_icon.png",
     color: Color(0xFF008373),
     desc: 'Wyszukiwarka Microsoft',
   ),
   (
     name: 'Brave Search',
     url: 'https://search.brave.com',
-    icon: "assets/icon.png",
+    icon: "assets/brave_search_icon.png",
     color: Color(0xFFFF6000),
     desc: 'Niezależna, bez śledzenia',
   ),
   (
-    name: 'Startpage',
-    url: 'https://www.startpage.com',
-    icon: "assets/icon.png",
-    color: Color(0xFF4CAF50),
-    desc: 'Prywatne wyniki Google',
-  ),
-  (
     name: 'Ecosia',
     url: 'https://www.ecosia.org',
-    icon: "assets/icon.png",
+    icon: "assets/ecosia_search_icon.png",
     color: Color(0xFF4CAF50),
     desc: 'Sadzisz drzewa wyszukując',
   ),
   (
     name: 'Yahoo',
     url: 'https://search.yahoo.com',
-    icon: "assets/icon.png",
+    icon: "assets/yahoo_search_icon.png",
     color: Color(0xFF6001D2),
     desc: 'Klasyczna wyszukiwarka',
   ),
