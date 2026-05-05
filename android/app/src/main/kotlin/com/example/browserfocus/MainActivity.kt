@@ -19,10 +19,11 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "app/shortcuts"
+    private val SCHEME_CHANNEL = "app/custom_scheme"
     private var initialUrl: String? = null
-    // Bufor na URL które przyszły przed gotowością Flutter engine
     private var pendingUrl: String? = null
     private var methodChannel: MethodChannel? = null
+    private var schemeChannel: MethodChannel? = null
     private var pendingShortcutResult: MethodChannel.Result? = null
     private val REQUEST_CREATE_SHORTCUT = 1001
 
@@ -36,6 +37,13 @@ class MainActivity : FlutterActivity() {
         }
         initialUrl = extractUrl(intent)
         android.util.Log.d("SHORTCUT", "onCreate initialUrl = $initialUrl")
+        android.util.Log.d("CustomScheme", "🚀 onCreate — startWebViewWatcher będzie wywołany z configureFlutterEngine")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        android.util.Log.d("CustomScheme", "🔄 onResume — restartuje watcher")
+        startWebViewWatcher()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -49,14 +57,19 @@ class MainActivity : FlutterActivity() {
         val url = extractUrl(intent) ?: return
         android.util.Log.d("SHORTCUT", "onNewIntent url=$url")
         initialUrl = url
+        pendingUrl = url
 
         val channel = methodChannel
+        android.util.Log.d("SHORTCUT", "methodChannel is ${if (channel != null) "READY" else "NULL"}")
         if (channel != null) {
-            // Engine gotowy — wyślij od razu
-            channel.invokeMethod("onShortcutUrl", url)
-        } else {
-            // Engine nie gotowy — zapamiętaj do wysłania później
-            pendingUrl = url
+            android.os.Handler(mainLooper).postDelayed({
+                val pending = pendingUrl
+                if (pending != null) {
+                    pendingUrl = null
+                    android.util.Log.d("SHORTCUT", "Wysyłam onShortcutUrl (delayed): $pending")
+                    channel.invokeMethod("onShortcutUrl", pending)
+                }
+            }, 300)
         }
     }
 
@@ -95,7 +108,6 @@ class MainActivity : FlutterActivity() {
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getInitialUrl" -> {
-                    // Zwróć pendingUrl jeśli jest, fallback na initialUrl
                     val url = pendingUrl ?: initialUrl
                     pendingUrl = null
                     android.util.Log.d("SHORTCUT", "getInitialUrl -> $url")
@@ -110,7 +122,6 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // Wyślij buforowany URL jeśli przyszedł przed gotowością engine
         pendingUrl?.let { url ->
             pendingUrl = null
             android.util.Log.d("SHORTCUT", "Wysyłam buforowany URL: $url")
@@ -383,7 +394,6 @@ class MainActivity : FlutterActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
 
-            // Metoda 1: ShortcutManager API (Android 8+, nie działa na Vivo)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val sm = getSystemService(ShortcutManager::class.java)
                 if (sm != null && sm.isRequestPinShortcutSupported) {
@@ -400,7 +410,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-            // Metoda 2: ACTION_CREATE_SHORTCUT — działa na Vivo
             android.util.Log.d("SHORTCUT", "Próbuję ACTION_CREATE_SHORTCUT")
             val bitmap = getBitmapFromResource(R.mipmap.launcher_icon)
 
@@ -426,9 +435,7 @@ class MainActivity : FlutterActivity() {
                 @Suppress("DEPRECATION")
                 startActivityForResult(createIntent, REQUEST_CREATE_SHORTCUT)
                 android.util.Log.d("SHORTCUT", "startActivityForResult wysłane")
-                // result.success wywoła onActivityResult
             } else {
-                // Metoda 3: ostateczny fallback broadcast
                 android.util.Log.w("SHORTCUT", "ACTION_CREATE_SHORTCUT niedostępne, próbuję broadcast")
                 @Suppress("DEPRECATION")
                 sendBroadcast(Intent("com.android.launcher.action.INSTALL_SHORTCUT").apply {
@@ -456,7 +463,6 @@ class MainActivity : FlutterActivity() {
                 })
                 android.util.Log.d("SHORTCUT", "Skrót zainstalowany przez launcher (RESULT_OK)")
             } else if (data != null && data.extras != null) {
-                // Niektóre launchery zwracają dane ale z innym resultCode
                 @Suppress("DEPRECATION")
                 sendBroadcast(Intent("com.android.launcher.action.INSTALL_SHORTCUT").apply {
                     putExtras(data)
@@ -465,7 +471,6 @@ class MainActivity : FlutterActivity() {
                 android.util.Log.d("SHORTCUT", "Skrót zainstalowany przez launcher (resultCode=$resultCode)")
             } else {
                 android.util.Log.w("SHORTCUT", "Launcher nie zwrócił danych skrótu, próbuję fallback broadcast")
-                // Ostateczny fallback — wyślij oryginalny intent bezpośrednio
                 pendingShortcutResult?.error("SHORTCUT_CANCELLED", "Anulowano lub launcher nie obsługuje", null)
                 pendingShortcutResult = null
                 return
