@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'browser_service.dart';
 import 'pdf_screen.dart';
@@ -145,6 +147,7 @@ class _WebViewTabState extends State<WebViewTab>
             mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
             useOnDownloadStart: true,
             hardwareAcceleration: true,
+            useHybridComposition: false,
           ),
           onProgressChanged: (controller, progress) {
             if (mounted) setState(() => _progress = progress / 100);
@@ -508,17 +511,32 @@ class _WebViewTabState extends State<WebViewTab>
             }
           },
           onCreateWindow: (controller, createWindowAction) async {
+            // Pobierz URL z żądania
             final url = createWindowAction.request.url;
-            final urlString = url?.toString() ?? svc.homePageUrl;
+            // Jeśli URL jest pusty lub jest to about:blank, użyj strony głównej lub
+            // pozwól serwisowi obsłużyć pustą kartę
+            final urlString =
+                (url != null &&
+                    url.toString().isNotEmpty &&
+                    url.toString() != "about:blank")
+                ? url.toString()
+                : svc.homePageUrl;
+
             debugPrint('🪟 onCreateWindow: $urlString');
+
+            // Dodanie karty do serwisu
             svc.addTabWithUrl(urlString);
-            return true;
+
+            // Ręczne wywołanie powiadomienia, aby UI na pewno przeskoczyło do nowej karty
+            svc.notifyUI();
+
+            return true; // Informujemy WebView, że obsłużyliśmy otwarcie okna
           },
           shouldOverrideUrlLoading: (c, act) async {
             final url = act.request.url;
             if (url == null) return NavigationActionPolicy.ALLOW;
             final urlString = url.toString();
-            debugPrint('🔀 shouldOverride: $urlString');
+
             // 1. Schematy wewnętrzne — przepuść bez sprawdzania
             if (urlString.startsWith('about:') ||
                 urlString.startsWith('file:') ||
