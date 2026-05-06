@@ -151,12 +151,35 @@ class _WebViewTabState extends State<WebViewTab>
           ),
           onProgressChanged: (controller, progress) {
             if (mounted) setState(() => _progress = progress / 100);
+            // Aktualizuj URL i metadane podczas ładowania (łapie redirecty)
+            if (progress > 20) {
+              controller.getUrl().then((u) {
+                if (u == null) return;
+                final urlString = u.toString();
+                if (!urlString.startsWith('about:') &&
+                    urlString != 'about:blank') {
+                  svc.updateTab(tab, url: urlString);
+                }
+              });
+            }
           },
           onTitleChanged: (controller, title) {
-            svc.updateTabMetadata(controller, title: title);
+            svc.updateTab(tab, title: title);
           },
           onWebViewCreated: (c) {
             tab.controller = c;
+
+            // Handler dla aktualizacji tytułu z JS (SPA, YouTube itp.)
+            c.addJavaScriptHandler(
+              handlerName: 'onTitleUpdate',
+              callback: (args) {
+                if (args.isEmpty) return;
+                final newTitle = args[0]?.toString();
+                if (newTitle != null && newTitle.isNotEmpty) {
+                  svc.updateTab(tab, title: newTitle);
+                }
+              },
+            );
 
             // Handler dla custom scheme redirectów z JavaScript (np. OAuth)
             c.addJavaScriptHandler(
@@ -217,9 +240,11 @@ class _WebViewTabState extends State<WebViewTab>
             if (url == null) return;
             final urlString = url.toString();
 
-            if (!urlString.startsWith('http://') &&
-                !urlString.startsWith('https://') &&
-                !urlString.startsWith('about:') &&
+            if (urlString.startsWith('http://') ||
+                urlString.startsWith('https://')) {
+              // Aktualizuj URL natychmiast gdy strona zaczyna się ładować
+              svc.updateTab(tab, url: urlString);
+            } else if (!urlString.startsWith('about:') &&
                 !urlString.startsWith('file:') &&
                 !urlString.startsWith('data:')) {
               debugPrint('🔗 onLoadStart custom schemat: $urlString');
@@ -343,11 +368,40 @@ class _WebViewTabState extends State<WebViewTab>
             if (urlString.isNotEmpty &&
                 !urlString.startsWith("about:") &&
                 urlString != "about:blank") {
+              // Natychmiastowa aktualizacja
               final title = await c.getTitle();
-              svc.updateTabMetadata(c, url: urlString, title: title);
-              if (svc.tabs.indexWhere((t) => t.controller == c) ==
-                  svc.currentTabIndex) {
-                widget.urlController.text = urlString;
+              svc.updateTab(tab, url: urlString, title: title);
+              // urlController jest aktualizowany przez _syncUrlBar w BrowserScreen
+
+              // Obserwator zmian document.title przez JS (SPA, YouTube itp.)
+              await c.evaluateJavascript(
+                source: """
+                (function() {
+                  if (window.__titleObserverInjected) return;
+                  window.__titleObserverInjected = true;
+                  var lastTitle = document.title;
+                  var obs = new MutationObserver(function() {
+                    if (document.title !== lastTitle) {
+                      lastTitle = document.title;
+                      try { window.flutter_inappwebview.callHandler("onTitleUpdate", document.title); } catch(e) {}
+                    }
+                  });
+                  var titleEl = document.querySelector("title");
+                  if (titleEl) obs.observe(titleEl, { childList: true, characterData: true, subtree: true });
+                  obs.observe(document.head || document.documentElement, { childList: true, subtree: false });
+                })();
+              """,
+              );
+
+              // Polling tytułu — 3 razy na wypadek gdyby JS jeszcze nie ustawił tytułu
+              for (final delay in [800, 1600, 3000]) {
+                Future.delayed(Duration(milliseconds: delay), () async {
+                  if (!mounted) return;
+                  final t = await c.getTitle();
+                  if (t != null && t.isNotEmpty) {
+                    svc.updateTab(tab, title: t);
+                  }
+                });
               }
             }
             await svc.addToHistory(await c.getTitle(), urlString);
@@ -592,6 +646,11 @@ class _WebViewTabState extends State<WebViewTab>
                 ),
               ),
             );
+
+            if (!blocked) {
+              // Aktualizuj URL od razu przy nawigacji — nie czekaj na onLoadStop
+              svc.updateTab(tab, url: urlString);
+            }
 
             return blocked
                 ? NavigationActionPolicy.CANCEL

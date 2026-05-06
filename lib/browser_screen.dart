@@ -32,16 +32,18 @@ class _BrowserScreenState extends State<BrowserScreen>
       svc.addListener(_handlePendingShortcut);
       svc.addListener(_syncUrlBar);
       _handlePendingShortcut();
-      // Pokaż onboarding wyboru wyszukiwarki jeśli jeszcze nie wybrano
-      // Sprawdzamy obie flagi — searchEngineSelected może być false przed loadData()
-      if (!svc.searchEngineSelected && svc.searchEngineUrl.isEmpty) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => const SearchEnginePicker(onboarding: true),
-            fullscreenDialog: true,
-          ),
-        );
-      }
+      // Czekaj na zakończenie init() zanim sprawdzisz czy wyszukiwarka jest wybrana
+      svc.ready.then((_) {
+        if (!mounted) return;
+        if (!svc.searchEngineSelected && svc.searchEngineUrl.isEmpty) {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const SearchEnginePicker(onboarding: true),
+              fullscreenDialog: true,
+            ),
+          );
+        }
+      });
     });
   }
 

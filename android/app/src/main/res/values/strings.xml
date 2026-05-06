@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">BrowserFocus</string>
-    <string name="widget_description">Tworzy szybki skrót do Twojej ulubionej strony z jej ikoną.</string>
+    <string name="appwidget_text">EXAMPLE</string>
+    <string name="configure">Configure</string>
+    <string name="add_widget">Add widget</string>
+    <string name="widget_description">Dodaj skrót do konkretnej strony internetowej</string>
 </resources>

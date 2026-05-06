@@ -203,11 +203,15 @@ class BrowserService extends ChangeNotifier {
   }
 
   // ── Inicjalizacja ────────────────────────────
+  final Completer<void> _readyCompleter = Completer<void>();
+  Future<void> get ready => _readyCompleter.future;
+
   Future<void> init() async {
     await _initUserAgent();
     final t0 = DateTime.now();
     await loadData();
     print("loadData: ${DateTime.now().difference(t0).inMilliseconds}ms");
+    if (!_readyCompleter.isCompleted) _readyCompleter.complete();
 
     final t1 = DateTime.now();
     loadBlocklists();
@@ -1959,14 +1963,7 @@ class BrowserService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void updateTabMetadata(
-    InAppWebViewController controller, {
-    String? url,
-    String? title,
-  }) {
-    final index = tabs.indexWhere((t) => t.controller == controller);
-    if (index == -1) return;
-
+  void _applyTabMetadata(int index, {String? url, String? title}) {
     var changed = false;
     if (url != null &&
         url.isNotEmpty &&
@@ -1975,7 +1972,6 @@ class BrowserService extends ChangeNotifier {
       tabs[index].url = url;
       changed = true;
     }
-
     final cleanTitle = title?.trim();
     if (_isUsableTabTitle(cleanTitle) && cleanTitle != tabs[index].title) {
       tabs[index].title = cleanTitle!;
@@ -1987,11 +1983,35 @@ class BrowserService extends ChangeNotifier {
         changed = true;
       }
     }
-
     if (changed) {
       saveTabs();
       notifyListeners();
     }
+  }
+
+  // Aktualizuj metadane przez referencję do obiektu TabModel (nie przez kontroler)
+  void updateTab(TabModel tab, {String? url, String? title}) {
+    final index = tabs.indexWhere((t) => t == tab);
+    if (index == -1) return;
+    _applyTabMetadata(index, url: url, title: title);
+  }
+
+  void updateTabMetadata(
+    InAppWebViewController controller, {
+    String? url,
+    String? title,
+  }) {
+    final index = tabs.indexWhere((t) => t.controller == controller);
+    if (index == -1) {
+      // Fallback: szukaj po URL
+      if (url != null && url.isNotEmpty) {
+        final urlIndex = tabs.indexWhere((t) => t.url == url);
+        if (urlIndex != -1) _applyTabMetadata(urlIndex, url: url, title: title);
+      }
+      return;
+    }
+
+    _applyTabMetadata(index, url: url, title: title);
   }
 
   bool _isUsableTabTitle(String? title) {
@@ -2111,27 +2131,13 @@ class BrowserService extends ChangeNotifier {
 
   Future<void> saveTabs() async {
     final prefs = await _getPrefs;
-    // Pobierz aktualny URL z kontrolera WebView (bardziej wiarygodne niż tab.url)
-    final tabsData = <Map<String, String>>[];
-    for (final t in tabs) {
-      String url = t.url;
-      if (t.controller != null) {
-        final liveUrl = (await t.controller!.getUrl())?.toString();
-        if (liveUrl != null &&
-            liveUrl.isNotEmpty &&
-            !liveUrl.startsWith('about:')) {
-          url = liveUrl;
-          t.url = liveUrl; // synchronizuj też pole
-        }
-        final liveTitle = (await t.controller!.getTitle())?.trim();
-        if (_isUsableTabTitle(liveTitle)) {
-          t.title = liveTitle!;
-        } else if (!_isUsableTabTitle(t.title)) {
-          t.title = _titleFromUrl(url);
-        }
-      }
-      tabsData.add({'url': url, 'title': t.title});
-    }
+    // Używaj tab.url który jest na bieżąco aktualizowany przez updateTabMetadata
+    // Nie odpytuj kontrolera asynchronicznie — może zwrócić stary URL
+    final tabsData = tabs.map((t) {
+      final url = t.url.isNotEmpty && !t.url.startsWith('about:') ? t.url : '';
+      final title = _isUsableTabTitle(t.title) ? t.title : _titleFromUrl(url);
+      return {'url': url, 'title': title};
+    }).toList();
     final encoded = json.encode(tabsData);
     await prefs.setString('saved_tabs', encoded);
     await prefs.setInt('saved_tab_index', currentTabIndex);
