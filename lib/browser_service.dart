@@ -20,6 +20,7 @@ class TabModel {
   String url;
   String title;
   bool loaded;
+  bool isPlayingAudio = false;
   TabModel({required this.url, this.title = "Nowa karta", this.loaded = false});
 }
 
@@ -2017,6 +2018,15 @@ class BrowserService extends ChangeNotifier {
   }
 
   // Aktualizuj metadane przez referencję do obiektu TabModel (nie przez kontroler)
+  void setTabAudio(TabModel tab, bool isPlaying) {
+    final index = tabs.indexWhere((t) => t == tab);
+    if (index == -1) return;
+    if (tabs[index].isPlayingAudio != isPlaying) {
+      tabs[index].isPlayingAudio = isPlaying;
+      notifyListeners();
+    }
+  }
+
   void updateTab(TabModel tab, {String? url, String? title}) {
     final index = tabs.indexWhere((t) => t == tab);
     if (index == -1) return;

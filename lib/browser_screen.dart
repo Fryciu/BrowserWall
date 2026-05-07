@@ -220,15 +220,32 @@ class _BrowserScreenState extends State<BrowserScreen>
                                         : null,
                                   ),
                                   child: Center(
-                                    child: Text(
-                                      svc.tabs[index].title,
-                                      style: TextStyle(
-                                        color: index == svc.currentTabIndex
-                                            ? Colors.white
-                                            : Colors.grey,
-                                        fontSize: 11,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (svc.tabs[index].isPlayingAudio)
+                                          const Padding(
+                                            padding: EdgeInsets.only(right: 4),
+                                            child: Icon(
+                                              Icons.volume_up,
+                                              size: 11,
+                                              color: Colors.lightBlueAccent,
+                                            ),
+                                          ),
+                                        Flexible(
+                                          child: Text(
+                                            svc.tabs[index].title,
+                                            style: TextStyle(
+                                              color:
+                                                  index == svc.currentTabIndex
+                                                  ? Colors.white
+                                                  : Colors.grey,
+                                              fontSize: 11,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),

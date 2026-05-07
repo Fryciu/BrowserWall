@@ -80,6 +80,20 @@ class _WebViewTabState extends State<WebViewTab>
     }
   }
 
+  Future<bool> _openUrlInPackage(String urlString, String packageName) async {
+    try {
+      if (!Platform.isAndroid) return false;
+      final opened = await _customSchemeChannel.invokeMethod<bool>(
+        'openUrlInPackage',
+        {'url': urlString, 'package': packageName},
+      );
+      return opened == true;
+    } catch (e) {
+      debugPrint('Native openUrlInPackage error: $e');
+      return false;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -154,6 +168,16 @@ class _WebViewTabState extends State<WebViewTab>
           },
           onWebViewCreated: (c) {
             tab.controller = c;
+
+            // Handler dla wykrywania odtwarzania audio
+            c.addJavaScriptHandler(
+              handlerName: 'onAudioState',
+              callback: (args) {
+                if (args.isEmpty) return;
+                final isPlaying = args[0] == true;
+                svc.setTabAudio(tab, isPlaying);
+              },
+            );
 
             // Handler dla aktualizacji tytułu z JS (SPA, YouTube itp.)
             c.addJavaScriptHandler(
@@ -358,6 +382,22 @@ class _WebViewTabState extends State<WebViewTab>
               final title = await c.getTitle();
               svc.updateTab(tab, url: urlString, title: title);
               // urlController jest aktualizowany przez _syncUrlBar w BrowserScreen
+
+              // Wykrywanie odtwarzania audio
+              await c.evaluateJavascript(
+                source: """
+                (function() {
+                  if (window.__audioWatcherInjected) return;
+                  window.__audioWatcherInjected = true;
+                  function checkAudio() {
+                    var playing = Array.from(document.querySelectorAll(\'audio,video\'))
+                      .some(function(m) { return !m.paused && !m.ended && m.readyState > 2; });
+                    try { window.flutter_inappwebview.callHandler(\'onAudioState\', playing); } catch(e) {}
+                  }
+                  setInterval(checkAudio, 1500);
+                })();
+              """,
+              );
 
               // Obserwator zmian document.title przez JS (SPA, YouTube itp.)
               await c.evaluateJavascript(

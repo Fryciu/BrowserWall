@@ -1380,10 +1380,26 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                 activeColor: Colors.blue,
                               )
                             : const Icon(Icons.tab, color: Colors.blue),
-                        title: Text(
-                          svc.tabs[index].title,
-                          style: const TextStyle(color: Colors.white),
-                          maxLines: 1,
+                        title: Row(
+                          children: [
+                            if (svc.tabs[index].isPlayingAudio)
+                              const Padding(
+                                padding: EdgeInsets.only(right: 6),
+                                child: Icon(
+                                  Icons.volume_up,
+                                  size: 14,
+                                  color: Colors.lightBlueAccent,
+                                ),
+                              ),
+                            Expanded(
+                              child: Text(
+                                svc.tabs[index].title,
+                                style: const TextStyle(color: Colors.white),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
                         ),
                         subtitle: Text(
                           svc.tabs[index].url,
