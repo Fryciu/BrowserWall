@@ -133,6 +133,12 @@ class MainActivity : FlutterActivity() {
                     android.util.Log.d("OAuth", "onOAuthCallback code=$code")
                     result.success(null)
                 }
+                "pinAppWidget" -> {
+                    val args = call.arguments as? Map<*, *>
+                    val name = args?.get("name") as? String ?: "Skrót"
+                    val url = args?.get("url") as? String ?: ""
+                    pinAppWidget(name, url, result)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -441,6 +447,55 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun createHomeScreenShortcut(name: String, url: String, result: MethodChannel.Result) {
+        // Pobierz favicon w tle, potem utwórz skrót
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        executor.execute {
+            val favicon = fetchFaviconBitmap(url)
+            runOnUiThread { createShortcutWithIcon(name, url, favicon, result) }
+        }
+    }
+
+    private fun fetchFaviconBitmap(url: String): android.graphics.Bitmap? {
+        val domain = android.net.Uri.parse(url).host ?: return null
+        val candidates =
+                listOf(
+                        "https://www.google.com/s2/favicons?domain=$domain&sz=256",
+                        "https://icons.duckduckgo.com/ip3/$domain.ico",
+                        "https://$domain/favicon.ico",
+                )
+        for (faviconUrl in candidates) {
+            try {
+                val conn = java.net.URL(faviconUrl).openConnection() as java.net.HttpURLConnection
+                conn.setRequestProperty(
+                        "User-Agent",
+                        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
+                )
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
+                conn.instanceFollowRedirects = true
+                conn.connect()
+                if (conn.responseCode == 200) {
+                    val bmp = android.graphics.BitmapFactory.decodeStream(conn.inputStream)
+                    conn.disconnect()
+                    if (bmp != null) {
+                        android.util.Log.d("SHORTCUT", "✅ Favicon: $faviconUrl")
+                        return bmp
+                    }
+                }
+                conn.disconnect()
+            } catch (e: Exception) {
+                android.util.Log.w("SHORTCUT", "Favicon failed: $faviconUrl — ${e.message}")
+            }
+        }
+        return null
+    }
+
+    private fun createShortcutWithIcon(
+            name: String,
+            url: String,
+            favicon: android.graphics.Bitmap?,
+            result: MethodChannel.Result
+    ) {
         try {
             val shortcutIntent =
                     Intent(this, MainActivity::class.java).apply {
@@ -450,14 +505,19 @@ class MainActivity : FlutterActivity() {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
 
+            val iconBitmap = favicon ?: getBitmapFromResource(R.mipmap.launcher_icon)
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val sm = getSystemService(ShortcutManager::class.java)
                 if (sm != null && sm.isRequestPinShortcutSupported) {
+                    val icon =
+                            if (iconBitmap != null) Icon.createWithBitmap(iconBitmap)
+                            else Icon.createWithResource(this, R.mipmap.launcher_icon)
                     val shortcut =
                             ShortcutInfo.Builder(this, "sc_${System.currentTimeMillis()}")
                                     .setShortLabel(name.take(25))
                                     .setLongLabel(name)
-                                    .setIcon(Icon.createWithResource(this, R.mipmap.launcher_icon))
+                                    .setIcon(icon)
                                     .setIntent(shortcutIntent)
                                     .build()
                     sm.requestPinShortcut(shortcut, null)
@@ -468,14 +528,12 @@ class MainActivity : FlutterActivity() {
             }
 
             android.util.Log.d("SHORTCUT", "Próbuję ACTION_CREATE_SHORTCUT")
-            val bitmap = getBitmapFromResource(R.mipmap.launcher_icon)
-
             val extras =
                     Intent().apply {
                         putExtra(Intent.EXTRA_SHORTCUT_INTENT, shortcutIntent)
                         putExtra(Intent.EXTRA_SHORTCUT_NAME, name)
-                        if (bitmap != null) {
-                            putExtra(Intent.EXTRA_SHORTCUT_ICON, bitmap)
+                        if (iconBitmap != null) {
+                            putExtra(Intent.EXTRA_SHORTCUT_ICON, iconBitmap)
                         } else {
                             putExtra(
                                     Intent.EXTRA_SHORTCUT_ICON_RESOURCE,
@@ -488,7 +546,6 @@ class MainActivity : FlutterActivity() {
                     }
 
             val createIntent = Intent(Intent.ACTION_CREATE_SHORTCUT).apply { putExtras(extras) }
-
             if (createIntent.resolveActivity(packageManager) != null) {
                 pendingShortcutResult = result
                 @Suppress("DEPRECATION")
@@ -558,6 +615,41 @@ class MainActivity : FlutterActivity() {
             }
             pendingShortcutResult?.success(null)
             pendingShortcutResult = null
+        }
+    }
+
+    private fun pinAppWidget(name: String, url: String, result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            result.error("UNSUPPORTED", "Pinowanie widżetów wymaga Android 8+", null)
+            return
+        }
+        try {
+            val appWidgetManager = android.appwidget.AppWidgetManager.getInstance(this)
+            val provider = android.content.ComponentName(this, NewAppWidget::class.java)
+
+            if (!appWidgetManager.isRequestPinAppWidgetSupported) {
+                result.error("UNSUPPORTED", "Launcher nie obsługuje pinowania widżetów", null)
+                return
+            }
+
+            // Zapisz URL i nazwę pod kluczami staging — ConfigureActivity odczyta je
+            // i przypisze pod prawdziwym ID widżetu po jego przydzieleniu przez launcher
+            val prefs =
+                    getSharedPreferences(
+                            NewAppWidget.PREFS_NAME,
+                            android.content.Context.MODE_PRIVATE
+                    )
+            prefs.edit()
+                    .putString(NewAppWidget.STAGED_NAME_KEY, name)
+                    .putString(NewAppWidget.STAGED_URL_KEY, url)
+                    .apply()
+
+            appWidgetManager.requestPinAppWidget(provider, null, null)
+            android.util.Log.d("WIDGET", "requestPinAppWidget wywołane: name=$name url=$url")
+            result.success(null)
+        } catch (e: Exception) {
+            android.util.Log.e("WIDGET", "Błąd pinowania widżetu: ${e.message}", e)
+            result.error("WIDGET_ERROR", e.message, null)
         }
     }
 

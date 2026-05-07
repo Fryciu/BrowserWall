@@ -512,6 +512,29 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
               child: ListView(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 children: [
+                  SwitchListTile(
+                    secondary: Icon(
+                      Icons.desktop_windows,
+                      color: svc.desktopMode ? Colors.blue : Colors.grey,
+                    ),
+                    title: const Text(
+                      'Wersja na komputer',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    subtitle: Text(
+                      svc.desktopMode ? 'Włączona' : 'Wyłączona',
+                      style: TextStyle(
+                        color: svc.desktopMode ? Colors.blue : Colors.grey,
+                        fontSize: 12,
+                      ),
+                    ),
+                    value: svc.desktopMode,
+                    activeColor: Colors.blue,
+                    onChanged: (val) {
+                      svc.setDesktopMode(val);
+                    },
+                  ),
+                  const Divider(color: Color(0xFF3A3A3E), height: 1),
                   _drawerTile(
                     icon: Icons.shield,
                     iconColor: svc.adBlockEnabled ? Colors.green : Colors.grey,

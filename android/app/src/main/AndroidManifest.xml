@@ -44,24 +44,6 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true">
-        <activity android:name=".NewAppWidgetConfigureActivity"
-    android:exported="false">
-    <intent-filter>
-        <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE"/>
-    </intent-filter>
-</activity>
-        <receiver
-            android:name=".NewAppWidget"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/new_app_widget_info" />
-        </receiver>
-
         <activity
             android:name=".ManageSpaceActivity"
             android:exported="true" />
@@ -91,16 +73,6 @@
 
                 <data android:scheme="http" />
                 <data android:scheme="https" />
-            </intent-filter>
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <!-- This matches my-app://callback -->
-                <data
-                    android:host="callback"
-                    android:scheme="my-app" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -148,13 +120,37 @@
         -->
         <meta-data
             android:name="flutterEmbedding"
-            android:value="2" /> <!-- Osobna aktywność do obsługi OAuth flow innych aplikacji (np. GitHub Mobile) -->
-        <!-- Brak intent-filter — uruchamiana wyłącznie przez MainActivity -->
+            android:value="2" />
+
+        <!-- AppWidget — skrót do strony jako widżet na ekranie głównym -->
+        <receiver
+            android:name=".NewAppWidget"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.example.browserfocus.WIDGET_PINNED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/new_app_widget_info" />
+        </receiver>
+
+        <activity
+            android:name=".NewAppWidgetConfigureActivity"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <!-- Osobna aktywność do obsługi OAuth flow innych aplikacji (np. GitHub Mobile) -->
         <activity
             android:name=".OAuthWebViewActivity"
             android:exported="false"
             android:launchMode="singleTop"
-            android:theme="@style/NormalTheme" /> <!-- Custom Tabs Service -->
+            android:theme="@style/NormalTheme" />
+
+        <!-- Custom Tabs Service — ogłasza systemowi że obsługujemy Custom Tabs API -->
         <service
             android:name=".CustomTabsService"
             android:exported="true">
@@ -162,6 +158,7 @@
                 <action android:name="android.support.customtabs.action.CustomTabsService" />
             </intent-filter>
         </service>
+
     </application>
 
 </manifest>

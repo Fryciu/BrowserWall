@@ -80,20 +80,6 @@ class _WebViewTabState extends State<WebViewTab>
     }
   }
 
-  Future<bool> _openUrlInPackage(String urlString, String packageName) async {
-    try {
-      if (!Platform.isAndroid) return false;
-      final opened = await _customSchemeChannel.invokeMethod<bool>(
-        'openUrlInPackage',
-        {'url': urlString, 'package': packageName},
-      );
-      return opened == true;
-    } catch (e) {
-      debugPrint('Native openUrlInPackage error: $e');
-      return false;
-    }
-  }
-
   @override
   void initState() {
     super.initState();

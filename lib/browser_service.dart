@@ -37,9 +37,34 @@ class BrowserService extends ChangeNotifier {
 
   List<String> blackList = [];
   String homePageUrl = 'https://www.google.com';
-  String _userAgent =
+  static const String _mobileUA =
       'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+  static const String _desktopUA =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+  bool _desktopMode = false;
+  bool get desktopMode => _desktopMode;
+
+  String _userAgent = _mobileUA;
   String get userAgent => _userAgent;
+
+  Future<void> setDesktopMode(bool value) async {
+    _desktopMode = value;
+    _userAgent = value ? _desktopUA : _mobileUA;
+    final prefs = await _getPrefs;
+    await prefs.setBool('desktop_mode', value);
+    // Przeładuj wszystkie otwarte karty z nowym UA
+    for (final tab in tabs) {
+      if (tab.controller != null) {
+        await tab.controller!.setSettings(
+          settings: InAppWebViewSettings(userAgent: _userAgent),
+        );
+        await tab.controller!.reload();
+      }
+    }
+    notifyListeners();
+  }
+
   String searchEngineUrl = ''; // puste = nie wybrano jeszcze
   bool searchEngineSelected = false; // czy użytkownik już wybrał
 
@@ -1054,6 +1079,8 @@ class BrowserService extends ChangeNotifier {
     }
     searchEngineUrl = p.getString('search_engine_url') ?? '';
     searchEngineSelected = p.getBool('search_engine_selected') ?? false;
+    _desktopMode = p.getBool('desktop_mode') ?? false;
+    if (_desktopMode) _userAgent = _desktopUA;
 
     // Wczytaj własne wyszukiwarki użytkownika
     final customEnginesData = p.getString('custom_search_engines');
