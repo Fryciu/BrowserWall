@@ -47,12 +47,22 @@ class _WebViewTabState extends State<WebViewTab>
   double _progress = 0;
   int _webViewKey = 0;
   int _lastAdBlockVersion = 0;
+  bool _timeLimitBlocked = false;
 
   void _onSvcChanged() {
     final svc = widget.svc;
     if (svc.adBlockVersion != _lastAdBlockVersion) {
       _lastAdBlockVersion = svc.adBlockVersion;
       if (mounted) setState(() => _webViewKey++);
+    }
+    if (_timeLimitBlocked &&
+        widget.tab.url.isNotEmpty &&
+        !widget.tab.url.startsWith('about:') &&
+        !svc.isBlockedByTimeRule(widget.tab.url)) {
+      _timeLimitBlocked = false;
+      widget.tab.controller?.loadUrl(
+        urlRequest: URLRequest(url: WebUri(widget.tab.url)),
+      );
     }
   }
 
@@ -143,6 +153,7 @@ class _WebViewTabState extends State<WebViewTab>
             javaScriptEnabled: true,
             supportMultipleWindows: true,
             javaScriptCanOpenWindowsAutomatically: true,
+            useShouldOverrideUrlLoading: true,
             userAgent: svc.userAgent,
             mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
             useOnDownloadStart: true,
@@ -168,6 +179,43 @@ class _WebViewTabState extends State<WebViewTab>
           },
           onWebViewCreated: (c) {
             tab.controller = c;
+
+            // Tracking czasu — rejestruj co 5s na potrzeby limitów czasowych
+            Future.doWhile(() async {
+              await Future.delayed(const Duration(seconds: 5));
+              if (!mounted) return false;
+              if (svc.currentTab != tab) return mounted;
+
+              final controllerUrl = await c.getUrl();
+              if (!mounted) return false;
+              final currentUrl = controllerUrl?.toString() ?? tab.url;
+              if (currentUrl.isNotEmpty && !currentUrl.startsWith('about:')) {
+                final uri = Uri.tryParse(currentUrl);
+                final domain = uri?.host ?? '';
+                if (domain.isNotEmpty && !_timeLimitBlocked) {
+                  final reachedLimit =
+                      svc.recordUsage(domain, 5) ||
+                      svc.isBlockedByTimeRule(currentUrl);
+                  if (reachedLimit && mounted) {
+                    _timeLimitBlocked = true;
+                    await c.stopLoading();
+                    await c.loadUrl(
+                      urlRequest: URLRequest(
+                        url: WebUri('about:blank#blocked'),
+                      ),
+                    );
+                    widget.onPasswordRequired(
+                      svc,
+                      WebUri(currentUrl),
+                      c,
+                      reason: BlockReason.timeLimit,
+                      matchedWord: domain,
+                    );
+                  }
+                }
+              }
+              return mounted;
+            });
 
             // Handler dla wykrywania odtwarzania audio
             c.addJavaScriptHandler(
@@ -241,6 +289,7 @@ class _WebViewTabState extends State<WebViewTab>
               );
 
               if (!blocked) {
+                _timeLimitBlocked = false;
                 c.loadUrl(urlRequest: URLRequest(url: WebUri(urlToLoad)));
               }
             });
@@ -252,6 +301,31 @@ class _WebViewTabState extends State<WebViewTab>
 
             if (urlString.startsWith('http://') ||
                 urlString.startsWith('https://')) {
+              final blocked = svc.handleNavigation(
+                urlString,
+                c,
+                (url, ctrl, reason, matchedWord) => widget.onPasswordRequired(
+                  svc,
+                  url,
+                  ctrl,
+                  reason: reason,
+                  matchedWord: matchedWord,
+                ),
+                (message) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(message),
+                        backgroundColor: Colors.redAccent,
+                      ),
+                    );
+                  }
+                },
+              );
+              if (blocked) {
+                await c.stopLoading();
+                return;
+              }
               // Aktualizuj URL natychmiast gdy strona zaczyna się ładować
               svc.updateTab(tab, url: urlString);
             } else if (!urlString.startsWith('about:') &&
@@ -674,6 +748,7 @@ class _WebViewTabState extends State<WebViewTab>
             );
 
             if (!blocked) {
+              _timeLimitBlocked = false;
               // Aktualizuj URL od razu przy nawigacji — nie czekaj na onLoadStop
               svc.updateTab(tab, url: urlString);
             }

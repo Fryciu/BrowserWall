@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:intl/intl.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart'
     show consolidateHttpClientResponseBytes, setEquals;
@@ -27,7 +28,76 @@ class TabModel {
 // ─────────────────────────────────────────────
 //  SERWIS (cała logika biznesowa / backendowa)
 // ─────────────────────────────────────────────
-enum BlockReason { none, proxy, content, blacklist }
+enum BlockReason { none, proxy, content, blacklist, timeLimit }
+
+/// Tryb reguły czasowej
+enum TimeRuleMode { dailyLimit, timeWindow }
+
+/// Reguła czasowa dla domeny.
+/// [mode] = dailyLimit: max [dailyLimitMinutes] minut dziennie
+/// [mode] = timeWindow: blokada w godzinach [windowStart]-[windowEnd]
+/// [allowedDays] = lista dni tygodnia (1=pn, 7=nd) gdy reguła obowiązuje (puste = wszystkie dni)
+class TimeRule {
+  final String domain;
+  final TimeRuleMode mode;
+  final int dailyLimitMinutes; // dla trybu dailyLimit
+  final TimeOfDay windowStart; // dla trybu timeWindow
+  final TimeOfDay windowEnd; // dla trybu timeWindow
+  final List<int> allowedDays; // 1=pn..7=nd, puste=każdy dzień
+
+  const TimeRule({
+    required this.domain,
+    this.mode = TimeRuleMode.dailyLimit,
+    this.dailyLimitMinutes = 30,
+    this.windowStart = const TimeOfDay(hour: 8, minute: 0),
+    this.windowEnd = const TimeOfDay(hour: 22, minute: 0),
+    this.allowedDays = const [],
+  });
+
+  Map<String, dynamic> toJson() => {
+    'domain': domain,
+    'mode': mode.name,
+    'dailyLimitMinutes': dailyLimitMinutes,
+    'windowStartH': windowStart.hour,
+    'windowStartM': windowStart.minute,
+    'windowEndH': windowEnd.hour,
+    'windowEndM': windowEnd.minute,
+    'allowedDays': allowedDays,
+  };
+
+  factory TimeRule.fromJson(Map<String, dynamic> j) => TimeRule(
+    domain: j['domain'] as String,
+    mode: TimeRuleMode.values.firstWhere(
+      (e) => e.name == j['mode'],
+      orElse: () => TimeRuleMode.dailyLimit,
+    ),
+    dailyLimitMinutes: j['dailyLimitMinutes'] as int? ?? 30,
+    windowStart: TimeOfDay(
+      hour: j['windowStartH'] as int? ?? 8,
+      minute: j['windowStartM'] as int? ?? 0,
+    ),
+    windowEnd: TimeOfDay(
+      hour: j['windowEndH'] as int? ?? 22,
+      minute: j['windowEndM'] as int? ?? 0,
+    ),
+    allowedDays: List<int>.from(j['allowedDays'] ?? []),
+  );
+
+  TimeRule copyWith({
+    TimeRuleMode? mode,
+    int? dailyLimitMinutes,
+    TimeOfDay? windowStart,
+    TimeOfDay? windowEnd,
+    List<int>? allowedDays,
+  }) => TimeRule(
+    domain: domain,
+    mode: mode ?? this.mode,
+    dailyLimitMinutes: dailyLimitMinutes ?? this.dailyLimitMinutes,
+    windowStart: windowStart ?? this.windowStart,
+    windowEnd: windowEnd ?? this.windowEnd,
+    allowedDays: allowedDays ?? this.allowedDays,
+  );
+}
 
 class BrowserService extends ChangeNotifier {
   String? pendingShortcutUrl;
@@ -37,6 +107,205 @@ class BrowserService extends ChangeNotifier {
   int currentTabIndex = 0;
 
   List<String> blackList = [];
+
+  /// Reguły czasowe: domain -> TimeRule
+  Map<String, TimeRule> timeRules = {};
+
+  /// Czas spędzony na domenach dziś (w sekundach): domain -> seconds
+  Map<String, int> _todayUsage = {};
+  String _todayKey = ''; // klucz daty np. "2024-01-15"
+
+  /// Zwraca ile minut spędzono dziś na domenie
+  String _normalizeDomain(String domain) {
+    final clean = domain.trim().toLowerCase();
+    return clean.startsWith('www.') ? clean.substring(4) : clean;
+  }
+
+  int getTodayUsageMinutes(String domain) {
+    _ensureTodayKey();
+    final bare = _normalizeDomain(domain);
+    return (_todayUsage[bare] ?? 0) ~/ 60;
+  }
+
+  int getTodayUsageSeconds(String domain) {
+    _ensureTodayKey();
+    final usageKey = _usageKeyForDomain(domain);
+    var seconds = _todayUsage[usageKey] ?? 0;
+
+    // Compatibility with usage stored before rule-key normalization.
+    for (final entry in _todayUsage.entries) {
+      if (entry.key != usageKey &&
+          (entry.key == usageKey || entry.key.endsWith('.$usageKey'))) {
+        seconds += entry.value;
+      }
+    }
+    return seconds;
+  }
+
+  int getRemainingSecondsForRule(TimeRule rule) {
+    if (rule.mode != TimeRuleMode.dailyLimit) return 0;
+    final limitSeconds = rule.dailyLimitMinutes * 60;
+    final usedSeconds = getTodayUsageSeconds(rule.domain);
+    return (limitSeconds - usedSeconds).clamp(0, limitSeconds);
+  }
+
+  /// Rejestruje sekundy spędzone na domenie (wywoływane co ~5s przez WebView)
+  bool recordUsage(String domain, int seconds) {
+    _ensureTodayKey();
+    // Normalizuj domenę tak samo jak przy dodawaniu reguł (bez www.)
+    final usageKey = _usageKeyForDomain(domain);
+    final previousSeconds = _todayUsage[usageKey] ?? 0;
+    final nextSeconds = previousSeconds + seconds;
+    _todayUsage[usageKey] = nextSeconds;
+    _saveUsage();
+    // Sprawdź czy limit nie został przekroczony — jeśli tak, odśwież UI
+    final dailyRules = _findTimeRules(
+      usageKey,
+    ).where((rule) => rule.mode == TimeRuleMode.dailyLimit);
+    final rule = dailyRules.isEmpty ? null : dailyRules.first;
+    if (rule != null) {
+      final previousMinutes = previousSeconds ~/ 60;
+      final used = nextSeconds ~/ 60;
+      if (used >= rule.dailyLimitMinutes &&
+          isBlockedByTimeRule('https://$usageKey')) {
+        notifyListeners();
+        return true;
+      }
+      if (used != previousMinutes) {
+        notifyListeners();
+      }
+    }
+    return false;
+  }
+
+  String _usageKeyForDomain(String domain) {
+    final normalized = _normalizeDomain(domain);
+    return _normalizeDomain(_findTimeRuleDomain(normalized) ?? normalized);
+  }
+
+  void _ensureTodayKey() {
+    final today = DateTime.now();
+    final key = DateFormat('yyyy-MM-dd').format(today);
+    if (_todayKey != key) {
+      _todayKey = key;
+      _todayUsage = {}; // nowy dzień — resetuj liczniki
+    }
+  }
+
+  bool _ruleMatchesDomain(TimeRule rule, String domain) {
+    final normalized = _normalizeDomain(domain);
+    final ruleDomain = _normalizeDomain(rule.domain);
+    return normalized == ruleDomain || normalized.endsWith('.$ruleDomain');
+  }
+
+  List<TimeRule> _findTimeRules(String domain) {
+    return timeRules.values
+        .where((rule) => _ruleMatchesDomain(rule, domain))
+        .toList(growable: false);
+  }
+
+  // ignore: unused_element
+  TimeRule? _findTimeRule(String domain) {
+    final normalized = _normalizeDomain(domain);
+    if (timeRules.containsKey(normalized)) return timeRules[normalized];
+    // Sprawdź też bez www.
+    final bare = _normalizeDomain(domain);
+    if (timeRules.containsKey(bare)) return timeRules[bare];
+    // Sprawdź czy któraś reguła pasuje jako sufiks domeny
+    for (final entry in timeRules.entries) {
+      final ruleDomain = _normalizeDomain(entry.key);
+      if (normalized.endsWith('.$ruleDomain') || normalized == ruleDomain) {
+        return entry.value;
+      }
+    }
+    return null;
+  }
+
+  String? _findTimeRuleDomain(String domain) {
+    final rules = _findTimeRules(domain);
+    if (rules.isNotEmpty) return rules.first.domain;
+    return null;
+  }
+
+  // ignore: unused_element
+  String? _findTimeRuleDomainLegacy(String domain) {
+    final normalized = _normalizeDomain(domain);
+    if (timeRules.containsKey(normalized)) return normalized;
+    for (final entry in timeRules.entries) {
+      final ruleDomain = _normalizeDomain(entry.key);
+      if (normalized.endsWith('.$ruleDomain') || normalized == ruleDomain) {
+        return entry.key;
+      }
+    }
+    return null;
+  }
+
+  /// Czy regula czasowa blokuje dostep teraz?
+  bool isBlockedByTimeRule(String urlString) {
+    final uri = Uri.tryParse(
+      urlString.startsWith('http') ? urlString : 'https://$urlString',
+    );
+    final domain = uri?.host ?? '';
+    if (domain.isEmpty) return false;
+    final rules = _findTimeRules(domain);
+    if (rules.isEmpty) return false;
+    return rules.any((rule) => _isTimeRuleActiveNow(rule, domain));
+  }
+
+  bool _isTimeRuleActiveNow(TimeRule rule, String domain) {
+    final now = DateTime.now();
+    final weekday = now.weekday;
+    if (rule.allowedDays.isNotEmpty && !rule.allowedDays.contains(weekday)) {
+      return false;
+    }
+
+    if (rule.mode == TimeRuleMode.dailyLimit) {
+      _ensureTodayKey();
+      final usageKey = _usageKeyForDomain(domain);
+      final usedMinutes = (_todayUsage[usageKey] ?? 0) ~/ 60;
+      return usedMinutes >= rule.dailyLimitMinutes;
+    }
+
+    final nowMinutes = now.hour * 60 + now.minute;
+    final startMinutes = rule.windowStart.hour * 60 + rule.windowStart.minute;
+    final endMinutes = rule.windowEnd.hour * 60 + rule.windowEnd.minute;
+    if (startMinutes == endMinutes) return true;
+    if (startMinutes < endMinutes) {
+      return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+    }
+    return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+  }
+
+  Future<void> addTimeRule(TimeRule rule) async {
+    timeRules[_timeRuleKey(rule)] = rule;
+    await _saveTimeRules();
+    notifyListeners();
+  }
+
+  Future<void> removeTimeRule(String domain) async {
+    timeRules.remove(domain);
+    await _saveTimeRules();
+    notifyListeners();
+  }
+
+  String _timeRuleKey(TimeRule rule) {
+    return '${_normalizeDomain(rule.domain)}|${rule.mode.name}';
+  }
+
+  Future<void> _saveTimeRules() async {
+    final prefs = await _getPrefs;
+    final encoded = json.encode(
+      timeRules.map((k, v) => MapEntry(k, v.toJson())),
+    );
+    await prefs.setString('time_rules', encoded);
+  }
+
+  Future<void> _saveUsage() async {
+    final prefs = await _getPrefs;
+    _ensureTodayKey();
+    await prefs.setString('usage_$_todayKey', json.encode(_todayUsage));
+  }
+
   String homePageUrl = 'https://www.google.com';
   static const String _mobileUA =
       'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
@@ -775,9 +1044,12 @@ class BrowserService extends ChangeNotifier {
 
     // Jeśli to pornografia lub blacklist - blokuj, chyba że mamy aktywną sesję auth
     if (reason == BlockReason.content || reason == BlockReason.blacklist) {
-      if (canSkipAuth(url)) return false; // Sesja jeszcze trwa, pozwól wejść
-      return true; // Wymaga hasła lub całkowita blokada
+      if (canSkipAuth(url)) return false;
+      return true;
     }
+
+    // Reguła czasowa — zawsze blokuj (bez możliwości ominięcia hasłem)
+    if (reason == BlockReason.timeLimit) return true;
 
     return false;
   }
@@ -1082,6 +1354,65 @@ class BrowserService extends ChangeNotifier {
     searchEngineSelected = p.getBool('search_engine_selected') ?? false;
     _desktopMode = p.getBool('desktop_mode') ?? false;
     if (_desktopMode) _userAgent = _desktopUA;
+
+    // Wczytaj reguły czasowe
+    final timeRulesData = p.getString('time_rules');
+    if (timeRulesData != null) {
+      try {
+        final decoded = json.decode(timeRulesData) as Map<String, dynamic>;
+        timeRules = decoded.map(
+          (k, v) => MapEntry(k, TimeRule.fromJson(v as Map<String, dynamic>)),
+        );
+        timeRules = Map.fromEntries(
+          timeRules.values.map((rule) => MapEntry(_timeRuleKey(rule), rule)),
+        );
+      } catch (_) {}
+    }
+
+    // Migracja: przenieś domeny z grupy 'Strony' do timeRules z limitem 0
+    // Uruchamia się tylko raz (gdy time_rules_migrated nie jest ustawione)
+    if (!(p.getBool('time_rules_migrated') ?? false)) {
+      final strony = blackListGroups['Strony'] ?? [];
+      for (final domain in strony) {
+        final clean = domain
+            .trim()
+            .replaceAll('https://', '')
+            .replaceAll('http://', '')
+            .replaceAll('www.', '')
+            .split('/')
+            .first;
+        final migratedRule = TimeRule(
+          domain: clean,
+          mode: TimeRuleMode.dailyLimit,
+          dailyLimitMinutes: 0,
+        );
+        if (clean.isNotEmpty &&
+            !timeRules.containsKey(_timeRuleKey(migratedRule))) {
+          timeRules[_timeRuleKey(migratedRule)] = migratedRule;
+        }
+      }
+      // Wyczyść grupę Strony
+      blackListGroups['Strony'] = [];
+      if (timeRules.isNotEmpty) {
+        final encoded = json.encode(
+          timeRules.map((k, v) => MapEntry(k, v.toJson())),
+        );
+        await p.setString('time_rules', encoded);
+      }
+      await p.setBool('time_rules_migrated', true);
+    }
+
+    // Wczytaj dzisiejsze zużycie
+    _ensureTodayKey();
+    final usageData = p.getString('usage_$_todayKey');
+    if (usageData != null) {
+      try {
+        final raw = json.decode(usageData) as Map;
+        _todayUsage = raw.map(
+          (k, v) => MapEntry(k.toString(), (v as num).toInt()),
+        );
+      } catch (_) {}
+    }
 
     // Wczytaj własne wyszukiwarki użytkownika
     final customEnginesData = p.getString('custom_search_engines');
@@ -1472,6 +1803,11 @@ class BrowserService extends ChangeNotifier {
       return BlockReason.blacklist;
     }
 
+    // 5. Reguły czasowe
+    if (isBlockedByTimeRule(normalizedUrl)) {
+      return BlockReason.timeLimit;
+    }
+
     return BlockReason.none;
   }
 
@@ -1568,6 +1904,10 @@ class BrowserService extends ChangeNotifier {
       return (BlockReason.blacklist, matchedBlacklist);
     }
 
+    if (isBlockedByTimeRule(normalizedUrl)) {
+      return (BlockReason.timeLimit, _findTimeRuleDomain(host) ?? host);
+    }
+
     return (BlockReason.none, null);
   }
 
@@ -1608,6 +1948,11 @@ class BrowserService extends ChangeNotifier {
     }
 
     // SafeSearch — tylko gdy URL jest czysty (brak słów kluczowych)
+    if (reason == BlockReason.timeLimit) {
+      onPasswordRequired(WebUri(urlString), controller, reason, matchedWord);
+      return true;
+    }
+
     if (adultFilterEnabled) {
       final safeUrl = _applySafeSearch(urlString);
       if (safeUrl != null) {

@@ -3,8 +3,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import 'browser_service.dart';
+import 'time_rules_screen.dart';
 import 'search_engine_picker.dart';
 import 'password_dialog.dart';
+import 'package:provider/provider.dart';
 
 /// Mixin zawierający wszystkie metody dialogów/menu dla BrowserScreen.
 /// Wymaga, aby klasa mieszająca była State<...> z dostępem do context.
@@ -40,8 +42,116 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
         Colors.redAccent,
       ),
       BlockReason.proxy => ("🛡️", "VPN / Proxy", Colors.purple),
+      BlockReason.timeLimit => (
+        "⏱️",
+        "Przekroczono limit czasowy",
+        Colors.orange,
+      ),
       _ => ("🔒", "Strona zablokowana", Colors.grey),
     };
+
+    // Dla timeLimit — nie pytaj o hasło, tylko pokaż info o limicie
+    if (reason == BlockReason.timeLimit) {
+      svc.isVerifying = false;
+      final uri = Uri.tryParse(url.toString());
+      final domain = uri?.host ?? '';
+      final cleanDomain = domain.startsWith('www.')
+          ? domain.substring(4)
+          : domain;
+      final matchingRules = svc.timeRules.values.where((rule) {
+        final ruleDomain = rule.domain.startsWith('www.')
+            ? rule.domain.substring(4)
+            : rule.domain;
+        return cleanDomain == ruleDomain ||
+            cleanDomain.endsWith('.$ruleDomain');
+      });
+      final rule = matchingRules.isEmpty ? null : matchingRules.first;
+      final usedMin = svc.getTodayUsageMinutes(domain);
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF202124),
+          title: const Text(
+            "⏱️ Limit czasowy",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.orange.withOpacity(0.4)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      domain.length > 30
+                          ? '${domain.substring(0, 30)}…'
+                          : domain,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 6),
+                    if (rule != null &&
+                        rule.mode == TimeRuleMode.dailyLimit) ...[
+                      if (rule.dailyLimitMinutes == 0)
+                        const Text(
+                          "Ta strona jest zawsze zablokowana.",
+                          style: TextStyle(color: Colors.orange),
+                        )
+                      else ...[
+                        Text(
+                          "Limit dzienny: ${rule.dailyLimitMinutes} min",
+                          style: const TextStyle(
+                            color: Colors.grey,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          "Wykorzystano dziś: $usedMin min",
+                          style: const TextStyle(
+                            color: Colors.orange,
+                            fontSize: 12,
+                          ),
+                        ),
+                        LinearProgressIndicator(
+                          value: (usedMin / rule.dailyLimitMinutes).clamp(
+                            0.0,
+                            1.0,
+                          ),
+                          backgroundColor: Colors.grey.shade800,
+                          color: Colors.red,
+                        ),
+                      ],
+                    ] else
+                      const Text(
+                        "Dostęp zablokowany w tym zakresie godzin.",
+                        style: TextStyle(color: Colors.orange),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("OK", style: TextStyle(color: Colors.blue)),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
 
     String enteredPass = "";
     showDialog(
@@ -190,8 +300,15 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
             child: const Text("ANULUJ"),
           ),
           TextButton(
-            onPressed: () =>
-                Navigator.pop(context, svc.verifyPassword(entered)),
+            onPressed: () {
+              if (svc.verifyPassword(entered)) {
+                Navigator.pop(context, true);
+              } else {
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(const SnackBar(content: Text("Błędne hasło!")));
+              }
+            },
             child: const Text("POTWIERDŹ"),
           ),
         ],
@@ -1023,115 +1140,9 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   // ── Blokady ──────────────────────────────────────────────────────────────
 
   void _showBlockingMenu(BrowserService svc) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF202124),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 10),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.blue),
-                  onPressed: () {
-                    Navigator.pop(context);
-                    showSettingsMenu(svc);
-                  },
-                ),
-                const Icon(Icons.block, color: Colors.redAccent, size: 22),
-                const SizedBox(width: 8),
-                const Text(
-                  "Blokady",
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Divider(color: Colors.grey),
-          SwitchListTile(
-            title: const Text(
-              "Filtr treści (Porno/SafeSearch)",
-              style: TextStyle(color: Colors.white),
-            ),
-            secondary: Icon(
-              Icons.eighteen_up_rating_outlined,
-              color: svc.adultFilterEnabled ? Colors.red : Colors.green,
-            ),
-            value: svc.adultFilterEnabled,
-            onChanged: (val) async {
-              if (!val && svc.savedPassword != null) {
-                final granted = await _askForPasswordOnly(svc);
-                if (granted != true) return;
-              }
-              await svc.setAdultFilter(val);
-              if (mounted) Navigator.pop(context);
-              svc.currentTab.controller?.reload();
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.playlist_remove, color: Colors.redAccent),
-            title: const Text(
-              "Czarna lista",
-              style: TextStyle(color: Colors.white),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              _showListEditor(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.lock_reset, color: Colors.orange),
-            title: const Text(
-              "Ustawienia hasła",
-              style: TextStyle(color: Colors.white),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              _setupPassword(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.file_present, color: Colors.orange),
-            title: const Text(
-              "Zablokowane pliki",
-              style: TextStyle(color: Colors.white),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              _showExtensionsEditor(svc);
-            },
-          ),
-          ListTile(
-            leading: const Icon(
-              Icons.eighteen_up_rating_outlined,
-              color: Colors.orange,
-            ),
-            title: const Text(
-              "Słowa filtra (tłumaczenia)",
-              style: TextStyle(color: Colors.white),
-            ),
-            subtitle: const Text(
-              "Przeglądaj i usuwaj tłumaczenia słów kluczowych",
-              style: TextStyle(color: Colors.grey, fontSize: 11),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              showPornKeywordsViewer(svc);
-            },
-          ),
-          const SizedBox(height: 10),
-        ],
-      ),
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (ctx) => _BlockingScreen(parentState: this)),
     );
   }
 
@@ -1481,6 +1492,313 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   }
 
   // ── Czarna lista ─────────────────────────────────────────────────────────
+
+  // Edytor tylko słów kluczowych (bez grupy Strony)
+  void _showKeywordsEditor(BrowserService svc) {
+    bool authenticated = svc.savedPassword == null;
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDS) {
+          final groups = Map.fromEntries(
+            svc.blackListGroups.entries.where((e) => e.key != 'Strony'),
+          );
+          final groupNames = groups.keys.toList();
+          return AlertDialog(
+            backgroundColor: const Color(0xFF202124),
+            title: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    "Słowa kluczowe",
+                    style: TextStyle(color: Colors.white, fontSize: 18),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(
+                    Icons.add_box_outlined,
+                    color: Colors.blue,
+                    size: 24,
+                  ),
+                  tooltip: "Nowa grupa",
+                  onPressed: () async {
+                    final nameC = TextEditingController();
+                    final name = await showDialog<String>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: const Color(0xFF202124),
+                        title: const Text(
+                          "Nowa grupa",
+                          style: TextStyle(color: Colors.white),
+                        ),
+                        content: TextField(
+                          controller: nameC,
+                          autofocus: true,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            hintText: "Nazwa grupy",
+                            hintStyle: TextStyle(color: Colors.grey),
+                          ),
+                          onSubmitted: (v) => Navigator.pop(ctx, v),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text(
+                              "ANULUJ",
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx, nameC.text),
+                            child: const Text(
+                              "DODAJ",
+                              style: TextStyle(color: Colors.blue),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (name != null && name.trim().isNotEmpty) {
+                      await svc.addGroup(name.trim());
+                      setDS(() {});
+                    }
+                  },
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.blue.withOpacity(0.25)),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.info_outline, color: Colors.blue, size: 16),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            "Wpisz słowa kluczowe. Przeglądarka zablokuje każdy URL zawierający te wyrazy.",
+                            style: TextStyle(color: Colors.blue, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Flexible(
+                    child: groupNames.isEmpty
+                        ? const Padding(
+                            padding: EdgeInsets.all(20),
+                            child: Text(
+                              "Brak grup",
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          )
+                        : ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: groupNames.length,
+                            itemBuilder: (context, gi) {
+                              final groupName = groupNames[gi];
+                              final entries = groups[groupName] ?? [];
+                              final addC = TextEditingController();
+                              return Card(
+                                color: const Color(0xFF2A2A2E),
+                                margin: const EdgeInsets.only(bottom: 8),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: ExpansionTile(
+                                  initiallyExpanded: true,
+                                  collapsedIconColor: Colors.grey,
+                                  iconColor: Colors.blue,
+                                  title: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          groupName,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                      ),
+                                      Text(
+                                        "${entries.length}",
+                                        style: const TextStyle(
+                                          color: Colors.grey,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      if (groupName != 'Słowa kluczowe')
+                                        GestureDetector(
+                                          onTap: () async {
+                                            if (!authenticated) {
+                                              final granted =
+                                                  await _askForPasswordOnly(
+                                                    svc,
+                                                  );
+                                              if (granted != true) return;
+                                              authenticated = true;
+                                            }
+                                            await svc.removeGroup(groupName);
+                                            setDS(() {});
+                                          },
+                                          child: const Padding(
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal: 4,
+                                            ),
+                                            child: Icon(
+                                              Icons.delete_outline,
+                                              color: Colors.redAccent,
+                                              size: 18,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  children: [
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        12,
+                                        0,
+                                        12,
+                                        8,
+                                      ),
+                                      child: TextField(
+                                        controller: addC,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                        ),
+                                        decoration: InputDecoration(
+                                          hintText: "Dodaj słowo (np. hazard)",
+                                          hintStyle: const TextStyle(
+                                            color: Colors.grey,
+                                            fontSize: 12,
+                                          ),
+                                          isDense: true,
+                                          suffixIcon: IconButton(
+                                            icon: const Icon(
+                                              Icons.add,
+                                              color: Colors.blue,
+                                              size: 18,
+                                            ),
+                                            onPressed: () async {
+                                              if (addC.text.isEmpty) return;
+                                              await svc.addToBlackListGroup(
+                                                groupName,
+                                                addC.text,
+                                              );
+                                              addC.clear();
+                                              setDS(() {});
+                                            },
+                                          ),
+                                        ),
+                                        onSubmitted: (v) async {
+                                          if (v.isEmpty) return;
+                                          await svc.addToBlackListGroup(
+                                            groupName,
+                                            v,
+                                          );
+                                          addC.clear();
+                                          setDS(() {});
+                                        },
+                                      ),
+                                    ),
+                                    if (entries.isEmpty)
+                                      const Padding(
+                                        padding: EdgeInsets.fromLTRB(
+                                          16,
+                                          0,
+                                          16,
+                                          12,
+                                        ),
+                                        child: Text(
+                                          "Brak wpisów",
+                                          style: TextStyle(
+                                            color: Colors.grey,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      )
+                                    else
+                                      ...entries.map(
+                                        (entry) => ListTile(
+                                          dense: true,
+                                          leading: const Icon(
+                                            Icons.text_fields,
+                                            color: Colors.grey,
+                                            size: 16,
+                                          ),
+                                          title: Text(
+                                            entry,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                          trailing: IconButton(
+                                            icon: const Icon(
+                                              Icons.close,
+                                              color: Colors.redAccent,
+                                              size: 18,
+                                            ),
+                                            onPressed: () async {
+                                              if (!authenticated) {
+                                                final granted =
+                                                    await _askForPasswordOnly(
+                                                      svc,
+                                                    );
+                                                if (granted != true) return;
+                                                authenticated = true;
+                                              }
+                                              await svc
+                                                  .removeFromBlackListGroup(
+                                                    groupName,
+                                                    entry,
+                                                  );
+                                              setDS(() {});
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  "ZAMKNIJ",
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
 
   void _showListEditor(BrowserService svc) {
     bool authenticated = svc.savedPassword == null;
@@ -3209,5 +3527,129 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
       grouped.putIfAbsent(d, () => []).add(e);
     }
     days.addAll(grouped.keys);
+  }
+}
+
+class _BlockingScreen extends StatefulWidget {
+  final State parentState;
+  const _BlockingScreen({required this.parentState});
+
+  @override
+  State<_BlockingScreen> createState() => _BlockingScreenState();
+}
+
+class _BlockingScreenState extends State<_BlockingScreen> {
+  // Helper to call mixin methods on parent
+  dynamic get p => widget.parentState;
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<BrowserService>(
+      builder: (context, svc, _) => Scaffold(
+        backgroundColor: const Color(0xFF202124),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF202124),
+          title: const Row(
+            children: [
+              Icon(Icons.block, color: Colors.redAccent, size: 20),
+              SizedBox(width: 8),
+              Text(
+                "Blokady",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          iconTheme: const IconThemeData(color: Colors.blue),
+        ),
+        body: ListView(
+          children: [
+            SwitchListTile(
+              title: const Text(
+                "Filtr treści (Porno/SafeSearch)",
+                style: TextStyle(color: Colors.white),
+              ),
+              secondary: Icon(
+                Icons.eighteen_up_rating_outlined,
+                color: svc.adultFilterEnabled ? Colors.red : Colors.green,
+              ),
+              value: svc.adultFilterEnabled,
+              onChanged: (val) async {
+                if (!val && svc.savedPassword != null) {
+                  final granted = await p._askForPasswordOnly(svc);
+                  if (granted != true) return;
+                }
+                await svc.setAdultFilter(val);
+                svc.currentTab.controller?.reload();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.timer, color: Colors.orange),
+              title: const Text(
+                "Limity czasowe stron",
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: Text(
+                "${svc.timeRules.length} reguł (0 min = zawsze zablokowane)",
+                style: const TextStyle(color: Colors.grey, fontSize: 11),
+              ),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const TimeRulesScreen()),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.text_fields, color: Colors.redAccent),
+              title: const Text(
+                "Słowa kluczowe",
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                "Blokuj strony zawierające te słowa",
+                style: TextStyle(color: Colors.grey, fontSize: 11),
+              ),
+              onTap: () => p._showKeywordsEditor(svc),
+            ),
+            ListTile(
+              leading: const Icon(Icons.lock_reset, color: Colors.orange),
+              title: const Text(
+                "Ustawienia hasła",
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () => p._setupPassword(svc),
+            ),
+            ListTile(
+              leading: const Icon(Icons.file_present, color: Colors.orange),
+              title: const Text(
+                "Zablokowane pliki",
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () => p._showExtensionsEditor(svc),
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.eighteen_up_rating_outlined,
+                color: Colors.orange,
+              ),
+              title: const Text(
+                "Słowa filtra (tłumaczenia)",
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                "Przeglądaj i usuwaj tłumaczenia słów kluczowych",
+                style: TextStyle(color: Colors.grey, fontSize: 11),
+              ),
+              onTap: () => p.showPornKeywordsViewer(svc),
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
   }
 }
