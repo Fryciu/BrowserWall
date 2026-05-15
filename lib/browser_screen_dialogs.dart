@@ -1741,46 +1741,170 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                         ),
                                       )
                                     else
-                                      ...entries.map(
-                                        (entry) => ListTile(
-                                          dense: true,
-                                          leading: const Icon(
-                                            Icons.text_fields,
-                                            color: Colors.grey,
-                                            size: 16,
-                                          ),
-                                          title: Text(
-                                            entry,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13,
+                                      ...entries.map((entry) {
+                                        final translations =
+                                            svc.wordTranslations[entry];
+                                        final hasTranslations =
+                                            translations != null &&
+                                            translations.length > 1;
+                                        final progress =
+                                            svc.translationProgress[entry];
+                                        final isLoading = progress != null;
+                                        return Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            ListTile(
+                                              dense: true,
+                                              contentPadding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 16,
+                                                    vertical: 0,
+                                                  ),
+                                              leading: const Icon(
+                                                Icons.text_fields,
+                                                color: Colors.grey,
+                                                size: 16,
+                                              ),
+                                              title: Text(
+                                                entry,
+                                                style: const TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 13,
+                                                ),
+                                              ),
+                                              subtitle: isLoading
+                                                  ? Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        const SizedBox(
+                                                          height: 3,
+                                                        ),
+                                                        Row(
+                                                          children: [
+                                                            Expanded(
+                                                              child: ClipRRect(
+                                                                borderRadius:
+                                                                    BorderRadius.circular(
+                                                                      4,
+                                                                    ),
+                                                                child: LinearProgressIndicator(
+                                                                  value:
+                                                                      progress,
+                                                                  minHeight: 4,
+                                                                  backgroundColor:
+                                                                      Colors
+                                                                          .grey
+                                                                          .shade800,
+                                                                  color: Colors
+                                                                      .blue,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                            const SizedBox(
+                                                              width: 6,
+                                                            ),
+                                                            Text(
+                                                              '${(progress * 100).toInt()}%',
+                                                              style:
+                                                                  const TextStyle(
+                                                                color: Colors
+                                                                    .blue,
+                                                                fontSize: 10,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ],
+                                                    )
+                                                  : hasTranslations
+                                                  ? Text(
+                                                      '🌐 ${translations.length - 1} tłumaczeń',
+                                                      style: const TextStyle(
+                                                        color: Colors.blue,
+                                                        fontSize: 10,
+                                                      ),
+                                                    )
+                                                  : null,
+                                              trailing: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  IconButton(
+                                                    icon: Icon(
+                                                      Icons.translate,
+                                                      color: hasTranslations
+                                                          ? Colors.blue
+                                                          : Colors.grey
+                                                              .withOpacity(0.4),
+                                                      size: 16,
+                                                    ),
+                                                    tooltip:
+                                                        'Tłumaczenia (wymaga hasła)',
+                                                    onPressed: () async {
+                                                      if (svc.savedPassword !=
+                                                          null) {
+                                                        final granted =
+                                                            await _askForPasswordOnly(
+                                                              svc,
+                                                            );
+                                                        if (granted != true)
+                                                          return;
+                                                      }
+                                                      if (!hasTranslations &&
+                                                          !isLoading) {
+                                                        await svc
+                                                            .fetchAndSaveTranslations(
+                                                              entry,
+                                                            );
+                                                        setDS(() {});
+                                                      }
+                                                      if (!context.mounted)
+                                                        return;
+                                                      _showTranslationsDialog(
+                                                        context: context,
+                                                        svc: svc,
+                                                        word: entry,
+                                                        translations:
+                                                            translations ?? [],
+                                                        onChanged: () =>
+                                                            setDS(() {}),
+                                                      );
+                                                    },
+                                                  ),
+                                                  IconButton(
+                                                    icon: const Icon(
+                                                      Icons.close,
+                                                      color: Colors.redAccent,
+                                                      size: 18,
+                                                    ),
+                                                    onPressed: () async {
+                                                      if (!authenticated) {
+                                                        final granted =
+                                                            await _askForPasswordOnly(
+                                                              svc,
+                                                            );
+                                                        if (granted != true)
+                                                          return;
+                                                        authenticated = true;
+                                                      }
+                                                      await svc
+                                                          .removeFromBlackListGroup(
+                                                            groupName,
+                                                            entry,
+                                                          );
+                                                      setDS(() {});
+                                                    },
+                                                  ),
+                                                ],
+                                              ),
                                             ),
-                                          ),
-                                          trailing: IconButton(
-                                            icon: const Icon(
-                                              Icons.close,
-                                              color: Colors.redAccent,
-                                              size: 18,
-                                            ),
-                                            onPressed: () async {
-                                              if (!authenticated) {
-                                                final granted =
-                                                    await _askForPasswordOnly(
-                                                      svc,
-                                                    );
-                                                if (granted != true) return;
-                                                authenticated = true;
-                                              }
-                                              await svc
-                                                  .removeFromBlackListGroup(
-                                                    groupName,
-                                                    entry,
-                                                  );
-                                              setDS(() {});
-                                            },
-                                          ),
-                                        ),
-                                      ),
+                                          ],
+                                        );
+                                      }),
                                   ],
                                 ),
                               );
@@ -2163,9 +2287,9 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                       color: hasTranslations
                                                           ? Colors.blue
                                                           : Colors.grey
-                                                                .withOpacity(
-                                                                  0.4,
-                                                                ),
+                                                              .withOpacity(
+                                                               0.4,
+                                                             ),
                                                       size: 16,
                                                     ),
                                                     tooltip:
@@ -2179,6 +2303,14 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                             );
                                                         if (granted != true)
                                                           return;
+                                                      }
+                                                      if (!hasTranslations &&
+                                                          !isLoading) {
+                                                        await svc
+                                                            .fetchAndSaveTranslations(
+                                                              entry,
+                                                            );
+                                                        setDS(() {});
                                                       }
                                                       if (!context.mounted)
                                                         return;
@@ -2290,6 +2422,15 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                     'Tłumaczenia: "$word"',
                     style: const TextStyle(color: Colors.white, fontSize: 15),
                   ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh, color: Colors.blue, size: 18),
+                  tooltip: 'Pobierz ponownie',
+                  onPressed: () async {
+                    await svc.fetchAndSaveTranslations(word);
+                    setTD(() {});
+                    onChanged();
+                  },
                 ),
               ],
             ),
@@ -2531,6 +2672,14 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                     '"$word"',
                     style: const TextStyle(color: Colors.white, fontSize: 15),
                   ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh, color: Colors.orange, size: 18),
+                  tooltip: 'Pobierz ponownie',
+                  onPressed: () async {
+                    await svc.fetchAndSaveTranslations(word);
+                    setTD(() {});
+                  },
                 ),
               ],
             ),

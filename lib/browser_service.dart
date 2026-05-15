@@ -595,6 +595,11 @@ class BrowserService extends ChangeNotifier {
 
   // Glosbe API jest znacznie lepsze do "wszystkich języków"
 
+  static const _wikidataHeaders = {
+    'User-Agent':
+        'BrowserFocus/1.0 (parental-control browser; https://github.com/Fryciu/browserfocus)',
+  };
+
   Future<List<String>> fetchTranslations(String word) async {
     final normalized = word.trim();
     if (normalized.isEmpty) return [];
@@ -609,7 +614,7 @@ class BrowserService extends ChangeNotifier {
       );
 
       final searchResp = await http
-          .get(searchUrl)
+          .get(searchUrl, headers: _wikidataHeaders)
           .timeout(const Duration(seconds: 4));
       String? wikidataId;
 
@@ -630,7 +635,7 @@ class BrowserService extends ChangeNotifier {
         );
 
         final entityResp = await http
-            .get(entityUrl)
+            .get(entityUrl, headers: _wikidataHeaders)
             .timeout(const Duration(seconds: 5));
 
         if (entityResp.statusCode == 200) {
@@ -682,6 +687,7 @@ class BrowserService extends ChangeNotifier {
     _wordTranslations[word] = translations;
     final prefs = await _getPrefs;
     await prefs.setString('word_translations', json.encode(_wordTranslations));
+    notifyListeners();
     return translations;
   }
 
@@ -1543,12 +1549,16 @@ class BrowserService extends ChangeNotifier {
     }
     _syncBlackListFromGroups();
     await saveBlackList();
-    notifyListeners();
 
-    // Pobierz tłumaczenia w tle (nie blokuje UI)
-    Future.microtask(() async {
-      await fetchAndSaveTranslations(clean);
-      debugPrint('🌐 Tłumaczenia dla "$clean": ${_wordTranslations[clean]}');
+    // Pobierz tłumaczenia w tle — pokaż pasek postępu od razu
+    translationProgress[clean] = 0.0;
+    notifyListeners();
+    fetchAndSaveTranslations(clean).then((_) {
+      translationProgress.remove(clean);
+      notifyListeners();
+    }).catchError((_) {
+      translationProgress.remove(clean);
+      notifyListeners();
     });
   }
 
