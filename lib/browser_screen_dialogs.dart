@@ -1496,6 +1496,8 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   // Edytor tylko słów kluczowych (bez grupy Strony)
   void _showKeywordsEditor(BrowserService svc) {
     bool authenticated = svc.savedPassword == null;
+    // Kontrolery żyją poza StatefulBuilder — nie resetują się przy setDS()
+    final addControllers = <String, TextEditingController>{};
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -1612,7 +1614,10 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                             itemBuilder: (context, gi) {
                               final groupName = groupNames[gi];
                               final entries = groups[groupName] ?? [];
-                              final addC = TextEditingController();
+                              final addC = addControllers.putIfAbsent(
+                                groupName,
+                                () => TextEditingController(),
+                              );
                               return Card(
                                 color: const Color(0xFF2A2A2E),
                                 margin: const EdgeInsets.only(bottom: 8),
@@ -1802,6 +1807,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
 
   void _showListEditor(BrowserService svc) {
     bool authenticated = svc.savedPassword == null;
+    final addControllers = <String, TextEditingController>{};
 
     showDialog(
       context: context,
@@ -1921,7 +1927,10 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                             itemBuilder: (context, gi) {
                               final groupName = groupNames[gi];
                               final entries = groups[groupName] ?? [];
-                              final addC = TextEditingController();
+                              final addC = addControllers.putIfAbsent(
+                                groupName,
+                                () => TextEditingController(),
+                              );
                               return Card(
                                 color: const Color(0xFF2A2A2E),
                                 margin: const EdgeInsets.only(bottom: 8),

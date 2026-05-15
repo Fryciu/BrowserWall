@@ -716,6 +716,10 @@ class BrowserService extends ChangeNotifier {
       try {
         final trans = await fetchTranslations(word);
         expanded.addAll(trans);
+        // Zapisz też do _wordTranslations żeby były widoczne w dialogu
+        if (trans.isNotEmpty) {
+          _wordTranslations[word] = trans;
+        }
         await Future.delayed(const Duration(milliseconds: 200)); // rate limit
       } catch (_) {}
     }
@@ -723,6 +727,8 @@ class BrowserService extends ChangeNotifier {
     _pornKeywordsExpanded = expanded;
     final prefs = await _getPrefs;
     await prefs.setStringList('porn_keywords_expanded', expanded.toList());
+    // Zapisz też słownik tłumaczeń
+    await prefs.setString('word_translations', json.encode(_wordTranslations));
     debugPrint('✅ pornKeywords expanded: ${expanded.length} słów');
   }
 
@@ -2323,7 +2329,7 @@ class BrowserService extends ChangeNotifier {
   }
 
   void closeAllTabs() {
-    tabs = [TabModel(url: homePageUrl)];
+    tabs = [TabModel(url: homePageUrl, loaded: true)];
     currentTabIndex = 0;
     saveTabs();
     notifyListeners();

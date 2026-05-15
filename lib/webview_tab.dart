@@ -9,6 +9,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:media_scanner/media_scanner.dart';
+import 'package:path/path.dart' as p;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:http/http.dart' as http;
 
 class WebViewTab extends StatefulWidget {
   final TabModel tab;
@@ -101,6 +105,291 @@ class _WebViewTabState extends State<WebViewTab>
     } catch (e) {
       debugPrint('Native openUrlInPackage error: $e');
       return false;
+    }
+  }
+
+  Future<String?> _saveDownloadedFile(List<int> bytes, String fileName) async {
+    try {
+      final targetDirectory = await _getDownloadsDirectory();
+      if (targetDirectory == null) return null;
+      if (!await targetDirectory.exists()) {
+        await targetDirectory.create(recursive: true);
+      }
+
+      final sanitizedName = _sanitizeFileName(fileName);
+      final safeName = sanitizedName.isEmpty
+          ? 'file_${DateTime.now().millisecondsSinceEpoch}.bin'
+          : sanitizedName;
+      final destinationPath = await _getUniqueFilePath(
+        targetDirectory.path,
+        safeName,
+      );
+      final output = File(destinationPath);
+      await output.writeAsBytes(bytes, flush: true);
+
+      if (Platform.isAndroid) {
+        try {
+          await MediaScanner.loadMedia(path: destinationPath);
+        } catch (e) {
+          debugPrint('MediaScanner error: $e');
+        }
+      }
+
+      return destinationPath;
+    } catch (e) {
+      debugPrint('download save error: $e');
+      return null;
+    }
+  }
+
+  String _extensionFromContentType(String contentType) {
+    final type = contentType.split(';').first.trim().toLowerCase();
+    return switch (type) {
+      'application/zip' => '.zip',
+      'application/x-zip-compressed' => '.zip',
+      'application/vnd.rar' => '.rar',
+      'application/x-7z-compressed' => '.7z',
+      'application/msword' => '.doc',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document' =>
+        '.docx',
+      'application/vnd.ms-excel' => '.xls',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' =>
+        '.xlsx',
+      'application/vnd.ms-powerpoint' => '.ppt',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation' =>
+        '.pptx',
+      'text/plain' => '.txt',
+      'text/csv' => '.csv',
+      'image/jpeg' => '.jpg',
+      'image/png' => '.png',
+      'image/gif' => '.gif',
+      'image/webp' => '.webp',
+      'audio/mpeg' => '.mp3',
+      'video/mp4' => '.mp4',
+      _ => '.bin',
+    };
+  }
+
+  Future<Directory?> _getDownloadsDirectory() async {
+    if (!Platform.isAndroid) {
+      return getApplicationDocumentsDirectory();
+    }
+
+    if (!await _checkStoragePermissions()) return null;
+
+    for (final path in const [
+      '/storage/emulated/0/Download',
+      '/sdcard/Download',
+      '/storage/emulated/0/Downloads',
+      '/sdcard/Downloads',
+    ]) {
+      final dir = Directory(path);
+      if (await dir.exists()) return dir;
+    }
+
+    final externalDir = await getExternalStorageDirectory();
+    if (externalDir == null) return null;
+    var basePath = externalDir.path;
+    if (basePath.contains('/Android')) {
+      basePath = basePath.split('/Android').first;
+    }
+    return Directory('$basePath/Download');
+  }
+
+  Future<bool> _checkStoragePermissions() async {
+    if (!Platform.isAndroid) return true;
+    if (await Permission.storage.isGranted) return true;
+    if (await Permission.manageExternalStorage.isGranted) return true;
+    if (await Permission.storage.request().isGranted) return true;
+    if (await Permission.manageExternalStorage.request().isGranted) return true;
+    return false;
+  }
+
+  Future<void> _handleFileDownload(String urlString) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Pobieranie pliku..."),
+        duration: Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    try {
+      Uri uri;
+      try {
+        uri = Uri.parse(urlString);
+      } catch (_) {
+        try {
+          uri = Uri.parse(Uri.encodeFull(Uri.decodeFull(urlString)));
+        } catch (_) {
+          uri = Uri.parse(urlString.replaceAll(' ', '%20'));
+        }
+      }
+
+      final response = await http
+          .get(uri)
+          .timeout(
+            const Duration(seconds: 30),
+            onTimeout: () => throw Exception('Timeout pobierania'),
+          );
+      if (!mounted) return;
+
+      if (response.statusCode != 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Błąd pobierania: HTTP ${response.statusCode}"),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      final bytes = response.bodyBytes;
+      final ct = (response.headers['content-type'] ?? '').toLowerCase();
+      final cd = response.headers['content-disposition'] ?? '';
+
+      // Sprawdź magic bytes czy to PDF
+      final isPdf =
+          bytes.length > 4 &&
+          bytes[0] == 0x25 &&
+          bytes[1] == 0x50 &&
+          bytes[2] == 0x44 &&
+          bytes[3] == 0x46;
+
+      String fileName = _fileNameFromCd(cd);
+      if (fileName.isEmpty) fileName = _fileNameFromUrl(urlString);
+      if (!p.basename(fileName).contains('.')) {
+        fileName += isPdf ? '.pdf' : _extensionFromContentType(ct);
+      }
+      fileName = _sanitizeFileName(fileName);
+      if (fileName.isEmpty) {
+        fileName = 'file_${DateTime.now().millisecondsSinceEpoch}.bin';
+      }
+
+      if (isPdf || fileName.toLowerCase().endsWith('.pdf')) {
+        final dir = await getTemporaryDirectory();
+        final file = File(p.join(dir.path, fileName));
+        await file.writeAsBytes(bytes);
+        if (mounted) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => PdfScreen(path: file.path, title: fileName),
+            ),
+          );
+        }
+      } else {
+        final savedPath = await _saveDownloadedFile(bytes, fileName);
+        if (!mounted) return;
+        if (savedPath != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.check_circle, color: Colors.white),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Zapisano pomyślnie!',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        Text(
+                          '📁 Pobrane/${p.basename(savedPath)}',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: Colors.green.shade700,
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Nie udało się zapisać: $fileName"),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Błąd: $e"),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  String _fileNameFromCd(String cd) {
+    if (cd.isEmpty) return '';
+    final match = RegExp(
+      r'''filename[^;=\n]*=((['"]).*?\2|[^;\n]*)''',
+    ).firstMatch(cd);
+    if (match == null) return '';
+    return match.group(1)!.replaceAll('"', '').replaceAll("'", '').trim();
+  }
+
+  String _fileNameFromUrl(String url) {
+    try {
+      // Use Uri.dataFromString if it's a data URI, or standard parse
+      final uri = Uri.tryParse(url);
+      if (uri == null) return '';
+
+      final last = uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '';
+      // Use decodeComponent safely
+      return last.isNotEmpty ? Uri.decodeComponent(last) : '';
+    } catch (e) {
+      // If decoding fails due to illegal percent, return the raw last segment
+      // and let the sanitizer clean it
+      return url.split('/').last.split('?').first;
+    }
+  }
+
+  String _sanitizeFileName(String fileName) {
+    return fileName
+        .split('?')
+        .first
+        .split('/')
+        .last
+        .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  Future<String> _getUniqueFilePath(String directory, String fileName) async {
+    final file = File(p.join(directory, fileName));
+    if (!await file.exists()) return file.path;
+
+    final nameWithoutExt = p.withoutExtension(fileName);
+    final extension = p.extension(fileName);
+    var counter = 1;
+    while (true) {
+      final candidate = p.join(
+        directory,
+        '$nameWithoutExt ($counter)$extension',
+      );
+      if (!await File(candidate).exists()) return candidate;
+      counter++;
     }
   }
 
@@ -507,162 +796,7 @@ class _WebViewTabState extends State<WebViewTab>
             await svc.addToHistory(await c.getTitle(), urlString);
           },
           onDownloadStartRequest: (controller, downloadRequest) async {
-            final urlString = downloadRequest.url.toString();
-
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text("Pobieranie dokumentu..."),
-                duration: Duration(seconds: 3),
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-
-            final completer = Completer<Map<String, dynamic>?>();
-            controller.addJavaScriptHandler(
-              handlerName: 'pdfDownloadResult',
-              callback: (args) async {
-                controller.removeJavaScriptHandler(
-                  handlerName: 'pdfDownloadResult',
-                );
-                if (args.isEmpty) {
-                  completer.complete(null);
-                  return;
-                }
-                try {
-                  completer.complete(json.decode(args[0] as String));
-                } catch (e) {
-                  completer.complete(null);
-                }
-              },
-            );
-
-            await controller.evaluateJavascript(
-              source:
-                  '''
-                (async function() {
-                  try {
-                    const resp = await fetch(${json.encode(urlString)}, {
-                      credentials: "include",
-                      headers: { "Accept": "application/pdf,*/*" }
-                    });
-                    if (!resp.ok) {
-                      window.flutter_inappwebview.callHandler("pdfDownloadResult", JSON.stringify({error: resp.status}));
-                      return;
-                    }
-                    const buf = await resp.arrayBuffer();
-                    const bytes = new Uint8Array(buf);
-                    let bin = "";
-                    const chunk = 8192;
-                    for (let i = 0; i < bytes.length; i += chunk) {
-                      bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-                    }
-                    const b64 = btoa(bin);
-                    const cd = resp.headers.get("content-disposition") || "";
-                    const ct = resp.headers.get("content-type") || "";
-                    window.flutter_inappwebview.callHandler("pdfDownloadResult", JSON.stringify({base64: b64, cd: cd, ct: ct}));
-                  } catch(e) {
-                    window.flutter_inappwebview.callHandler("pdfDownloadResult", JSON.stringify({error: e.toString()}));
-                  }
-                })();
-              ''',
-            );
-
-            final result = await completer.future.timeout(
-              const Duration(seconds: 45),
-              onTimeout: () => null,
-            );
-
-            if (result != null && result.containsKey('base64')) {
-              final bytes = base64Decode(result['base64']);
-              final String cd = (result['cd'] as String? ?? '');
-              final String ct = (result['ct'] as String? ?? '').toLowerCase();
-              final String urlString = downloadRequest.url
-                  .toString()
-                  .toLowerCase();
-
-              String fileName = "";
-
-              // 1. Sprawdzenie sygnatury pliku (Magic Number) - NAJPEWNIEJSZE
-              // Sprawdzamy czy pierwsze 4 bajty to %PDF (ASCII: 37, 80, 68, 70)
-              bool isActuallyPdf = false;
-              if (bytes.length > 4) {
-                if (bytes[0] == 0x25 &&
-                    bytes[1] == 0x50 &&
-                    bytes[2] == 0x44 &&
-                    bytes[3] == 0x46) {
-                  isActuallyPdf = true;
-                }
-              }
-
-              // 2. Próba wyciągnięcia nazwy z nagłówka
-              if (cd.isNotEmpty) {
-                final regExp = RegExp(
-                  r'''filename[^;=\n]*=((['"]).*?\2|[^;\n]*)''',
-                );
-                final match = regExp.firstMatch(cd);
-                if (match != null) {
-                  fileName = match
-                      .group(1)!
-                      .replaceAll('"', '')
-                      .replaceAll("'", '')
-                      .trim();
-                }
-              }
-
-              // 3. Logika ustalania rozszerzenia
-              if (isActuallyPdf) {
-                // Jeśli to PDF, upewnij się, że ma rozszerzenie .pdf
-                if (fileName.isEmpty) {
-                  // Jeśli brak nazwy, spróbuj wyciągnąć coś sensownego z adresu URL
-                  final Uri uri = Uri.parse(urlString);
-                  String lastSegment = uri.pathSegments.isNotEmpty
-                      ? uri.pathSegments.last
-                      : "";
-                  if (lastSegment.isEmpty || lastSegment.contains('.')) {
-                    fileName =
-                        "dokument_${DateTime.now().millisecondsSinceEpoch}.pdf";
-                  } else {
-                    fileName = "$lastSegment.pdf";
-                  }
-                } else if (!fileName.toLowerCase().endsWith(".pdf")) {
-                  // Zamień błędne rozszerzenie (np. .bin lub .do) na .pdf
-                  fileName = fileName.contains('.')
-                      ? "${fileName.substring(0, fileName.lastIndexOf('.'))}.pdf"
-                      : "$fileName.pdf";
-                }
-              } else if (fileName.isEmpty) {
-                // Jeśli to nie PDF i brak nazwy, użyj Content-Type lub fallbacku
-                String ext = ".bin";
-                if (ct.contains("image/jpeg"))
-                  ext = ".jpg";
-                else if (ct.contains("image/png"))
-                  ext = ".png";
-                else if (ct.contains("word"))
-                  ext = ".doc";
-
-                fileName = "file_${DateTime.now().millisecondsSinceEpoch}$ext";
-              }
-
-              final dir = await getTemporaryDirectory();
-              final file = File('${dir.path}/$fileName');
-              await file.writeAsBytes(bytes);
-
-              if (mounted) {
-                if (fileName.toLowerCase().endsWith('.pdf')) {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          PdfScreen(path: file.path, title: fileName),
-                    ),
-                  );
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text("Pobrano plik: $fileName")),
-                  );
-                }
-              }
-            }
+            _handleFileDownload(downloadRequest.url.toString());
           },
           onCreateWindow: (controller, createWindowAction) async {
             // Pobierz URL z żądania
@@ -725,6 +859,49 @@ class _WebViewTabState extends State<WebViewTab>
                   content: Text("Pobieranie tego typu pliku jest zablokowane."),
                 ),
               );
+              return NavigationActionPolicy.CANCEL;
+            }
+
+            // Przechwytuj pliki po rozszerzeniu — serwer może nie wysyłać
+            // Content-Disposition:attachment więc onDownloadStartRequest nie odpala
+            const _downloadExts = {
+              '.docx',
+              '.doc',
+              '.xlsx',
+              '.xls',
+              '.pptx',
+              '.ppt',
+              '.zip',
+              '.rar',
+              '.7z',
+              '.tar',
+              '.gz',
+              '.apk',
+              '.exe',
+              '.dmg',
+              '.mp3',
+              '.mp4',
+              '.avi',
+              '.mkv',
+              '.mov',
+              '.jpg',
+              '.jpeg',
+              '.png',
+              '.gif',
+              '.webp',
+              '.txt',
+              '.csv',
+              '.xml',
+              '.json',
+              '.pdf',
+            };
+            final decodedUrl = Uri.decodeFull(
+              urlString.split('?').first.toLowerCase(),
+            );
+            final ext = '.${decodedUrl.split('.').last}';
+            if (_downloadExts.contains(ext)) {
+              // Uruchom pobieranie w tle — nie nawiguj
+              _handleFileDownload(urlString);
               return NavigationActionPolicy.CANCEL;
             }
 
