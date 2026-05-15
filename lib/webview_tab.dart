@@ -6,7 +6,6 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'browser_service.dart';
 import 'pdf_screen.dart';
 import 'dart:async';
-import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:media_scanner/media_scanner.dart';
@@ -90,20 +89,6 @@ class _WebViewTabState extends State<WebViewTab>
       );
     } catch (e) {
       debugPrint('launchUrl error: $e');
-      return false;
-    }
-  }
-
-  Future<bool> _openUrlInPackage(String urlString, String packageName) async {
-    try {
-      if (!Platform.isAndroid) return false;
-      final opened = await _customSchemeChannel.invokeMethod<bool>(
-        'openUrlInPackage',
-        {'url': urlString, 'package': packageName},
-      );
-      return opened == true;
-    } catch (e) {
-      debugPrint('Native openUrlInPackage error: $e');
       return false;
     }
   }
@@ -539,6 +524,15 @@ class _WebViewTabState extends State<WebViewTab>
               },
             );
 
+            // Handler dla błędów JS z console.error
+            c.addJavaScriptHandler(
+              handlerName: 'jsError',
+              callback: (args) {
+                if (args.isEmpty) return;
+                debugPrint('🐛 JS Error: ${args[0]}');
+              },
+            );
+
             // Nasłuchuj na custom scheme z natywnego WebViewClient
             _customSchemeChannel.setMethodCallHandler((call) async {
               if (call.method == 'onCustomScheme') {
@@ -655,6 +649,78 @@ class _WebViewTabState extends State<WebViewTab>
               (function() {
                 if (window.__customSchemeInjected) return;
                 window.__customSchemeInjected = true;
+
+                // Łap błędy JS do debugowania logowania
+                window.onerror = function(msg, src, line, col, err) {
+                  console.error('🐛 BF JS Error:', msg, 'at', src, line, col);
+                };
+                (function() {
+                  var origConsoleError = console.error;
+                  console.error = function() {
+                    try { window.flutter_inappwebview.callHandler('jsError', Array.prototype.slice.call(arguments).join(' ')); } catch(e) {}
+                    return origConsoleError.apply(console, arguments);
+                  };
+                })();
+
+                // Loguj wszystkie kliknięcia
+                document.addEventListener('click', function(e) {
+                  var el = e.target;
+                  var tag = el.tagName || '?';
+                  var text = (el.textContent || '').trim().substring(0, 40);
+                  var id = el.id || '';
+                  var cls = el.className || '';
+                  console.log('🖱 BF Click:', tag, '"' + text + '"', '#' + id, '.' + cls);
+                  // Sprawdź czy handler React jest podpięty na elemencie lub jego parentach
+                  var cur = el;
+                  while (cur && cur !== document.body) {
+                    var reactKey = Object.keys(cur).find(function(k) { return k.indexOf('__reactProps') >= 0 || k.indexOf('__reactEventHandlers') >= 0; });
+                    if (reactKey) {
+                      var props = cur[reactKey];
+                      console.log('🔄 BF React onClick on', cur.tagName, '.' + ((cur.className || '').substring(0,30)), ':', props && typeof props.onClick);
+                      if (props && typeof props.onClick === 'function') {
+                        var fnStr = props.onClick.toString().substring(0, 300);
+                        console.log('🔄 BF onClick body:', fnStr);
+                      }
+                      break;
+                    }
+                    cur = cur.parentElement;
+                  }
+                }, true);
+
+                // Nadpisz window.open — zamiast popupa (który nie działa na mobile),
+                // przekieruj bieżącą kartę. To wymusi redirect OAuth zamiast popupa.
+                var origWindowOpen = window.open;
+                window.open = function(url, name, features) {
+                  if (url && url !== 'about:blank' && url !== '') {
+                    console.log('🪟 BF window.open with real URL:', url.substring(0, 100));
+                    window.location.href = url;
+                  } else {
+                    console.log('🪟 BF window.open empty/blank - returning null for Supabase fallback');
+                  }
+                  // Zwróć null — Supabase ma fallback do window.location.href = url
+                  return null;
+                };
+
+                // Loguj wszystkie fetch i XHR do debugowania logowania
+                (function() {
+                  var origFetch2 = window.fetch.bind(window);
+                  window.fetch = function(input, init) {
+                    var url = typeof input === 'string' ? input : (input && input.url) || '';
+                    if (isCustom(url)) { sendCustom(url); return Promise.resolve(new Response('', {status: 200})); }
+                    if (url.includes('auth.') || url.includes('supabase') || url.includes('google')) {
+                      console.log('🌐 BF Fetch:', url);
+                    }
+                    return origFetch2(input, init).then(function(r) {
+                      if (url.includes('auth.') || url.includes('supabase')) {
+                        console.log('✅ BF Fetch OK:', url, r.status);
+                      }
+                      return r;
+                    }).catch(function(e) {
+                      console.error('❌ BF Fetch FAIL:', url, e.message);
+                      throw e;
+                    });
+                  };
+                })();
 
                 function isCustom(url) {
                   if (!url || typeof url !== "string") return false;
@@ -795,30 +861,33 @@ class _WebViewTabState extends State<WebViewTab>
             }
             await svc.addToHistory(await c.getTitle(), urlString);
           },
+          onConsoleMessage: (controller, message) {
+            debugPrint('📋 Console: [${message.messageLevel}] ${message.message}');
+          },
           onDownloadStartRequest: (controller, downloadRequest) async {
             _handleFileDownload(downloadRequest.url.toString());
           },
           onCreateWindow: (controller, createWindowAction) async {
-            // Pobierz URL z żądania
             final url = createWindowAction.request.url;
-            // Jeśli URL jest pusty lub jest to about:blank, użyj strony głównej lub
-            // pozwól serwisowi obsłużyć pustą kartę
-            final urlString =
-                (url != null &&
-                    url.toString().isNotEmpty &&
-                    url.toString() != "about:blank")
-                ? url.toString()
-                : svc.homePageUrl;
+            var urlString = url?.toString() ?? '';
+            debugPrint('🪟 onCreateWindow: "$urlString"');
 
-            debugPrint('🪟 onCreateWindow: $urlString');
+            if (urlString.isEmpty || urlString == 'about:blank') {
+              // Supabase/ OAuth otwiera pusty popup a potem ustawia location.
+              // Nie blokuj – nawiguj bieżącą kartę. Strona po chwili
+              // dostanie błąd (popup nie istnieje) i sama przekieruje
+              // (fallback redirect).
+              return false;
+            }
 
-            // Dodanie karty do serwisu
-            svc.addTabWithUrl(urlString);
-
-            // Ręczne wywołanie powiadomienia, aby UI na pewno przeskoczyło do nowej karty
+            // Mobile WebView nie wspiera popupów z window.opener.
+            // Nawiguj bieżącą kartę zamiast tworzyć nową.
+            svc.currentTab.url = urlString;
+            svc.currentTab.controller?.loadUrl(
+              urlRequest: URLRequest(url: WebUri(urlString)),
+            );
             svc.notifyUI();
-
-            return true; // Informujemy WebView, że obsłużyliśmy otwarcie okna
+            return true;
           },
           shouldOverrideUrlLoading: (c, act) async {
             final url = act.request.url;

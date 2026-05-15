@@ -1142,7 +1142,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   void _showBlockingMenu(BrowserService svc) {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (ctx) => _BlockingScreen(parentState: this)),
+      MaterialPageRoute(builder: (ctx) => const _BlockingScreen()),
     );
   }
 
@@ -1496,7 +1496,6 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   // Edytor tylko słów kluczowych (bez grupy Strony)
   void _showKeywordsEditor(BrowserService svc) {
     bool authenticated = svc.savedPassword == null;
-    // Kontrolery żyją poza StatefulBuilder — nie resetują się przy setDS()
     final addControllers = <String, TextEditingController>{};
     showDialog(
       context: context,
@@ -1574,31 +1573,6 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.withOpacity(0.08),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue.withOpacity(0.25)),
-                    ),
-                    child: const Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(Icons.info_outline, color: Colors.blue, size: 16),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            "Wpisz słowa kluczowe. Przeglądarka zablokuje każdy URL zawierający te wyrazy.",
-                            style: TextStyle(color: Colors.blue, fontSize: 12),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                   Flexible(
                     child: groupNames.isEmpty
                         ? const Padding(
@@ -1613,7 +1587,8 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                             itemCount: groupNames.length,
                             itemBuilder: (context, gi) {
                               final groupName = groupNames[gi];
-                              final entries = groups[groupName] ?? [];
+                              final entries =
+                                  (groups[groupName] ?? [])..sort();
                               final addC = addControllers.putIfAbsent(
                                 groupName,
                                 () => TextEditingController(),
@@ -1643,8 +1618,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                       Text(
                                         "${entries.length}",
                                         style: const TextStyle(
-                                          color: Colors.grey,
-                                          fontSize: 12,
+                                          color: Colors.grey, fontSize: 12,
                                         ),
                                       ),
                                       const SizedBox(width: 4),
@@ -1678,22 +1652,17 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                   children: [
                                     Padding(
                                       padding: const EdgeInsets.fromLTRB(
-                                        12,
-                                        0,
-                                        12,
-                                        8,
+                                        12, 0, 12, 8,
                                       ),
                                       child: TextField(
                                         controller: addC,
                                         style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 13,
+                                          color: Colors.white, fontSize: 13,
                                         ),
                                         decoration: InputDecoration(
                                           hintText: "Dodaj słowo (np. hazard)",
                                           hintStyle: const TextStyle(
-                                            color: Colors.grey,
-                                            fontSize: 12,
+                                            color: Colors.grey, fontSize: 12,
                                           ),
                                           isDense: true,
                                           suffixIcon: IconButton(
@@ -1705,8 +1674,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                             onPressed: () async {
                                               if (addC.text.isEmpty) return;
                                               await svc.addToBlackListGroup(
-                                                groupName,
-                                                addC.text,
+                                                groupName, addC.text,
                                               );
                                               addC.clear();
                                               setDS(() {});
@@ -1716,8 +1684,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                         onSubmitted: (v) async {
                                           if (v.isEmpty) return;
                                           await svc.addToBlackListGroup(
-                                            groupName,
-                                            v,
+                                            groupName, v,
                                           );
                                           addC.clear();
                                           setDS(() {});
@@ -1727,16 +1694,12 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                     if (entries.isEmpty)
                                       const Padding(
                                         padding: EdgeInsets.fromLTRB(
-                                          16,
-                                          0,
-                                          16,
-                                          12,
+                                          16, 0, 16, 12,
                                         ),
                                         child: Text(
                                           "Brak wpisów",
                                           style: TextStyle(
-                                            color: Colors.grey,
-                                            fontSize: 12,
+                                            color: Colors.grey, fontSize: 12,
                                           ),
                                         ),
                                       )
@@ -1789,7 +1752,8 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                             Expanded(
                                                               child: ClipRRect(
                                                                 borderRadius:
-                                                                    BorderRadius.circular(
+                                                                    BorderRadius
+                                                                        .circular(
                                                                       4,
                                                                     ),
                                                                 child: LinearProgressIndicator(
@@ -1797,8 +1761,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                                       progress,
                                                                   minHeight: 4,
                                                                   backgroundColor:
-                                                                      Colors
-                                                                          .grey
+                                                                      Colors.grey
                                                                           .shade800,
                                                                   color: Colors
                                                                       .blue,
@@ -1831,456 +1794,9 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                     )
                                                   : null,
                                               trailing: Row(
-                                                mainAxisSize: MainAxisSize.min,
+                                                mainAxisSize:
+                                                    MainAxisSize.min,
                                                 children: [
-                                                  IconButton(
-                                                    icon: Icon(
-                                                      Icons.translate,
-                                                      color: hasTranslations
-                                                          ? Colors.blue
-                                                          : Colors.grey
-                                                              .withOpacity(0.4),
-                                                      size: 16,
-                                                    ),
-                                                    tooltip:
-                                                        'Tłumaczenia (wymaga hasła)',
-                                                    onPressed: () async {
-                                                      if (svc.savedPassword !=
-                                                          null) {
-                                                        final granted =
-                                                            await _askForPasswordOnly(
-                                                              svc,
-                                                            );
-                                                        if (granted != true)
-                                                          return;
-                                                      }
-                                                      if (!hasTranslations &&
-                                                          !isLoading) {
-                                                        await svc
-                                                            .fetchAndSaveTranslations(
-                                                              entry,
-                                                            );
-                                                        setDS(() {});
-                                                      }
-                                                      if (!context.mounted)
-                                                        return;
-                                                      _showTranslationsDialog(
-                                                        context: context,
-                                                        svc: svc,
-                                                        word: entry,
-                                                        translations:
-                                                            translations ?? [],
-                                                        onChanged: () =>
-                                                            setDS(() {}),
-                                                      );
-                                                    },
-                                                  ),
-                                                  IconButton(
-                                                    icon: const Icon(
-                                                      Icons.close,
-                                                      color: Colors.redAccent,
-                                                      size: 18,
-                                                    ),
-                                                    onPressed: () async {
-                                                      if (!authenticated) {
-                                                        final granted =
-                                                            await _askForPasswordOnly(
-                                                              svc,
-                                                            );
-                                                        if (granted != true)
-                                                          return;
-                                                        authenticated = true;
-                                                      }
-                                                      await svc
-                                                          .removeFromBlackListGroup(
-                                                            groupName,
-                                                            entry,
-                                                          );
-                                                      setDS(() {});
-                                                    },
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ],
-                                        );
-                                      }),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text(
-                  "ZAMKNIJ",
-                  style: TextStyle(color: Colors.blue),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  void _showListEditor(BrowserService svc) {
-    bool authenticated = svc.savedPassword == null;
-    final addControllers = <String, TextEditingController>{};
-
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDS) {
-          final groups = svc.blackListGroups;
-          final groupNames = groups.keys.toList();
-
-          return AlertDialog(
-            backgroundColor: const Color(0xFF202124),
-            title: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    "Czarna lista",
-                    style: TextStyle(color: Colors.white, fontSize: 18),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(
-                    Icons.add_box_outlined,
-                    color: Colors.blue,
-                    size: 24,
-                  ),
-                  tooltip: "Nowa grupa",
-                  onPressed: () async {
-                    final nameC = TextEditingController();
-                    final name = await showDialog<String>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        backgroundColor: const Color(0xFF202124),
-                        title: const Text(
-                          "Nowa grupa",
-                          style: TextStyle(color: Colors.white),
-                        ),
-                        content: TextField(
-                          controller: nameC,
-                          autofocus: true,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            hintText: "Nazwa grupy",
-                            hintStyle: TextStyle(color: Colors.grey),
-                          ),
-                          onSubmitted: (v) => Navigator.pop(ctx, v),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx),
-                            child: const Text(
-                              "ANULUJ",
-                              style: TextStyle(color: Colors.grey),
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx, nameC.text),
-                            child: const Text(
-                              "DODAJ",
-                              style: TextStyle(color: Colors.blue),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (name != null && name.trim().isNotEmpty) {
-                      await svc.addGroup(name.trim());
-                      setDS(() {});
-                    }
-                  },
-                ),
-              ],
-            ),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Info
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.withOpacity(0.08),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue.withOpacity(0.25)),
-                    ),
-                    child: const Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(Icons.info_outline, color: Colors.blue, size: 16),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            "Wpisz słowa kluczowe lub adresy stron, których nie chcesz odwiedzać. Przeglądarka zablokuje każdy URL zawierający te wyrazy.",
-                            style: TextStyle(color: Colors.blue, fontSize: 12),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Grupy
-                  Flexible(
-                    child: groupNames.isEmpty
-                        ? const Padding(
-                            padding: EdgeInsets.all(20),
-                            child: Text(
-                              "Brak grup",
-                              style: TextStyle(color: Colors.grey),
-                            ),
-                          )
-                        : ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: groupNames.length,
-                            itemBuilder: (context, gi) {
-                              final groupName = groupNames[gi];
-                              final entries = groups[groupName] ?? [];
-                              final addC = addControllers.putIfAbsent(
-                                groupName,
-                                () => TextEditingController(),
-                              );
-                              return Card(
-                                color: const Color(0xFF2A2A2E),
-                                margin: const EdgeInsets.only(bottom: 8),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: ExpansionTile(
-                                  initiallyExpanded: true,
-                                  collapsedIconColor: Colors.grey,
-                                  iconColor: Colors.blue,
-                                  title: Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          groupName,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                      ),
-                                      Text(
-                                        "${entries.length}",
-                                        style: const TextStyle(
-                                          color: Colors.grey,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 4),
-                                      // Usuń grupę (tylko niestandardowe)
-                                      if (groupName != 'Strony' &&
-                                          groupName != 'Słowa kluczowe')
-                                        GestureDetector(
-                                          onTap: () async {
-                                            if (!authenticated) {
-                                              final granted =
-                                                  await _askForPasswordOnly(
-                                                    svc,
-                                                  );
-                                              if (granted != true) return;
-                                              authenticated = true;
-                                            }
-                                            await svc.removeGroup(groupName);
-                                            setDS(() {});
-                                          },
-                                          child: const Padding(
-                                            padding: EdgeInsets.symmetric(
-                                              horizontal: 4,
-                                            ),
-                                            child: Icon(
-                                              Icons.delete_outline,
-                                              color: Colors.redAccent,
-                                              size: 18,
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                  children: [
-                                    // Pole dodawania
-                                    Padding(
-                                      padding: const EdgeInsets.fromLTRB(
-                                        12,
-                                        0,
-                                        12,
-                                        8,
-                                      ),
-                                      child: TextField(
-                                        controller: addC,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 13,
-                                        ),
-                                        decoration: InputDecoration(
-                                          hintText:
-                                              groupName == 'Słowa kluczowe'
-                                              ? "Dodaj słowo (np. hazard)"
-                                              : "Dodaj adres (np. facebook.com)",
-                                          hintStyle: const TextStyle(
-                                            color: Colors.grey,
-                                            fontSize: 12,
-                                          ),
-                                          isDense: true,
-                                          suffixIcon: IconButton(
-                                            icon: const Icon(
-                                              Icons.add,
-                                              color: Colors.blue,
-                                              size: 18,
-                                            ),
-                                            onPressed: () async {
-                                              if (addC.text.isEmpty) return;
-                                              await svc.addToBlackListGroup(
-                                                groupName,
-                                                addC.text,
-                                              );
-                                              addC.clear();
-                                              setDS(() {});
-                                            },
-                                          ),
-                                        ),
-                                        onSubmitted: (v) async {
-                                          if (v.isEmpty) return;
-                                          await svc.addToBlackListGroup(
-                                            groupName,
-                                            v,
-                                          );
-                                          addC.clear();
-                                          setDS(() {});
-                                        },
-                                      ),
-                                    ),
-                                    // Wpisy
-                                    if (entries.isEmpty)
-                                      const Padding(
-                                        padding: EdgeInsets.fromLTRB(
-                                          16,
-                                          0,
-                                          16,
-                                          12,
-                                        ),
-                                        child: Text(
-                                          "Brak wpisów",
-                                          style: TextStyle(
-                                            color: Colors.grey,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      )
-                                    else
-                                      ...entries.map((entry) {
-                                        final translations =
-                                            svc.wordTranslations[entry];
-                                        final hasTranslations =
-                                            translations != null &&
-                                            translations.length > 1;
-                                        final progress =
-                                            svc.translationProgress[entry];
-                                        final isLoading = progress != null;
-                                        return Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            ListTile(
-                                              dense: true,
-                                              contentPadding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 16,
-                                                    vertical: 0,
-                                                  ),
-                                              leading: Icon(
-                                                groupName == 'Słowa kluczowe'
-                                                    ? Icons.text_fields
-                                                    : Icons.language,
-                                                color: Colors.grey,
-                                                size: 16,
-                                              ),
-                                              title: Text(
-                                                entry,
-                                                style: const TextStyle(
-                                                  color: Colors.white70,
-                                                  fontSize: 13,
-                                                ),
-                                              ),
-                                              subtitle: isLoading
-                                                  ? Column(
-                                                      crossAxisAlignment:
-                                                          CrossAxisAlignment
-                                                              .start,
-                                                      mainAxisSize:
-                                                          MainAxisSize.min,
-                                                      children: [
-                                                        const SizedBox(
-                                                          height: 3,
-                                                        ),
-                                                        Row(
-                                                          children: [
-                                                            Expanded(
-                                                              child: ClipRRect(
-                                                                borderRadius:
-                                                                    BorderRadius.circular(
-                                                                      4,
-                                                                    ),
-                                                                child: LinearProgressIndicator(
-                                                                  value:
-                                                                      progress,
-                                                                  minHeight: 4,
-                                                                  backgroundColor:
-                                                                      Colors
-                                                                          .grey
-                                                                          .shade800,
-                                                                  color: Colors
-                                                                      .blue,
-                                                                ),
-                                                              ),
-                                                            ),
-                                                            const SizedBox(
-                                                              width: 6,
-                                                            ),
-                                                            Text(
-                                                              '${(progress * 100).toInt()}%',
-                                                              style:
-                                                                  const TextStyle(
-                                                                    color: Colors
-                                                                        .blue,
-                                                                    fontSize:
-                                                                        10,
-                                                                  ),
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ],
-                                                    )
-                                                  : hasTranslations
-                                                  ? Text(
-                                                      '🌐 ${translations.length - 1} tłumaczeń',
-                                                      style: const TextStyle(
-                                                        color: Colors.blue,
-                                                        fontSize: 10,
-                                                      ),
-                                                    )
-                                                  : null,
-                                              trailing: Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  // Ikona tłumaczeń — zawsze widoczna, ale za hasłem
                                                   IconButton(
                                                     icon: Icon(
                                                       Icons.translate,
@@ -2288,8 +1804,8 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                           ? Colors.blue
                                                           : Colors.grey
                                                               .withOpacity(
-                                                               0.4,
-                                                             ),
+                                                                0.4,
+                                                              ),
                                                       size: 16,
                                                     ),
                                                     tooltip:
@@ -2319,7 +1835,8 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                         svc: svc,
                                                         word: entry,
                                                         translations:
-                                                            translations ?? [],
+                                                            translations ??
+                                                                [],
                                                         onChanged: () =>
                                                             setDS(() {}),
                                                       );
@@ -2343,9 +1860,9 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                       }
                                                       await svc
                                                           .removeFromBlackListGroup(
-                                                            groupName,
-                                                            entry,
-                                                          );
+                                                        groupName,
+                                                        entry,
+                                                      );
                                                       setDS(() {});
                                                     },
                                                   ),
@@ -2409,7 +1926,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
         builder: (context, setTD) {
           final current = List<String>.from(
             svc.wordTranslations[word] ?? translations,
-          );
+          )..sort();
           final wordThresh = svc.wordThresholds[word] ?? -1; // -1 = auto
           return AlertDialog(
             backgroundColor: const Color(0xFF202124),
@@ -2422,15 +1939,6 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                     'Tłumaczenia: "$word"',
                     style: const TextStyle(color: Colors.white, fontSize: 15),
                   ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.refresh, color: Colors.blue, size: 18),
-                  tooltip: 'Pobierz ponownie',
-                  onPressed: () async {
-                    await svc.fetchAndSaveTranslations(word);
-                    setTD(() {});
-                    onChanged();
-                  },
                 ),
               ],
             ),
@@ -2659,7 +2167,8 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
       context: context,
       builder: (_) => StatefulBuilder(
         builder: (context, setTD) {
-          final current = List<String>.from(svc.wordTranslations[word] ?? []);
+          final current = List<String>.from(svc.wordTranslations[word] ?? [])
+            ..sort();
           final wordThresh = svc.wordThresholds[word] ?? -1;
           return AlertDialog(
             backgroundColor: const Color(0xFF202124),
@@ -2672,14 +2181,6 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                     '"$word"',
                     style: const TextStyle(color: Colors.white, fontSize: 15),
                   ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.refresh, color: Colors.orange, size: 18),
-                  tooltip: 'Pobierz ponownie',
-                  onPressed: () async {
-                    await svc.fetchAndSaveTranslations(word);
-                    setTD(() {});
-                  },
                 ),
               ],
             ),
@@ -2924,50 +2425,55 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
           content: SizedBox(
             width: double.maxFinite,
             height: 400,
-            child: ListView.builder(
-              itemCount: svc.pornKeywords.length,
-              itemBuilder: (context, index) {
-                final word = svc.pornKeywords[index];
-                final translations = svc.wordTranslations[word];
-                final hasT = translations != null && translations.isNotEmpty;
-                return ListTile(
-                  dense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-                  leading: const Icon(
-                    Icons.block,
-                    color: Colors.orange,
-                    size: 16,
-                  ),
-                  title: Text(
-                    word,
-                    style: const TextStyle(color: Colors.white70, fontSize: 13),
-                  ),
-                  subtitle: hasT
-                      ? Text(
-                          '${translations.length} tłumaczeń',
-                          style: const TextStyle(
-                            color: Colors.orange,
-                            fontSize: 10,
-                          ),
-                        )
-                      : null,
-                  trailing: IconButton(
-                    icon: Icon(
-                      Icons.translate,
-                      color: hasT
-                          ? Colors.orange
-                          : Colors.grey.withOpacity(0.4),
-                      size: 16,
-                    ),
-                    tooltip: 'Pokaż / edytuj tłumaczenia',
-                    onPressed: () {
-                      _showPornKeywordTranslationsDialog(
-                        context: context,
-                        svc: svc,
-                        word: word,
-                      );
-                    },
-                  ),
+            child: Builder(
+              builder: (context) {
+                final sortedPorn = List<String>.from(svc.pornKeywords)..sort();
+                return ListView.builder(
+                  itemCount: sortedPorn.length,
+                  itemBuilder: (context, index) {
+                    final word = sortedPorn[index];
+                    final translations = svc.wordTranslations[word];
+                    final hasT = translations != null && translations.isNotEmpty;
+                    return ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                      leading: const Icon(
+                        Icons.block,
+                        color: Colors.orange,
+                        size: 16,
+                      ),
+                      title: Text(
+                        word,
+                        style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      ),
+                      subtitle: hasT
+                          ? Text(
+                              '${translations.length} tłumaczeń',
+                              style: const TextStyle(
+                                color: Colors.orange,
+                                fontSize: 10,
+                              ),
+                            )
+                          : null,
+                      trailing: IconButton(
+                        icon: Icon(
+                          Icons.translate,
+                          color: hasT
+                              ? Colors.orange
+                              : Colors.grey.withOpacity(0.4),
+                          size: 16,
+                        ),
+                        tooltip: 'Pokaż / edytuj tłumaczenia',
+                        onPressed: () {
+                          _showPornKeywordTranslationsDialog(
+                            context: context,
+                            svc: svc,
+                            word: word,
+                          );
+                        },
+                      ),
+                    );
+                  },
                 );
               },
             ),
@@ -3689,16 +3195,14 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
 }
 
 class _BlockingScreen extends StatefulWidget {
-  final State parentState;
-  const _BlockingScreen({required this.parentState});
+  const _BlockingScreen();
 
   @override
   State<_BlockingScreen> createState() => _BlockingScreenState();
 }
 
-class _BlockingScreenState extends State<_BlockingScreen> {
-  // Helper to call mixin methods on parent
-  dynamic get p => widget.parentState;
+class _BlockingScreenState extends State<_BlockingScreen>
+    with BrowserScreenDialogsMixin<_BlockingScreen> {
 
   @override
   Widget build(BuildContext context) {
@@ -3737,7 +3241,7 @@ class _BlockingScreenState extends State<_BlockingScreen> {
               value: svc.adultFilterEnabled,
               onChanged: (val) async {
                 if (!val && svc.savedPassword != null) {
-                  final granted = await p._askForPasswordOnly(svc);
+                  final granted = await _askForPasswordOnly(svc);
                   if (granted != true) return;
                 }
                 await svc.setAdultFilter(val);
@@ -3771,7 +3275,7 @@ class _BlockingScreenState extends State<_BlockingScreen> {
                 "Blokuj strony zawierające te słowa",
                 style: TextStyle(color: Colors.grey, fontSize: 11),
               ),
-              onTap: () => p._showKeywordsEditor(svc),
+              onTap: () => _showKeywordsEditor(svc),
             ),
             ListTile(
               leading: const Icon(Icons.lock_reset, color: Colors.orange),
@@ -3779,7 +3283,7 @@ class _BlockingScreenState extends State<_BlockingScreen> {
                 "Ustawienia hasła",
                 style: TextStyle(color: Colors.white),
               ),
-              onTap: () => p._setupPassword(svc),
+              onTap: () => _setupPassword(svc),
             ),
             ListTile(
               leading: const Icon(Icons.file_present, color: Colors.orange),
@@ -3787,7 +3291,7 @@ class _BlockingScreenState extends State<_BlockingScreen> {
                 "Zablokowane pliki",
                 style: TextStyle(color: Colors.white),
               ),
-              onTap: () => p._showExtensionsEditor(svc),
+              onTap: () => _showExtensionsEditor(svc),
             ),
             ListTile(
               leading: const Icon(
@@ -3802,7 +3306,7 @@ class _BlockingScreenState extends State<_BlockingScreen> {
                 "Przeglądaj i usuwaj tłumaczenia słów kluczowych",
                 style: TextStyle(color: Colors.grey, fontSize: 11),
               ),
-              onTap: () => p.showPornKeywordsViewer(svc),
+              onTap: () => showPornKeywordsViewer(svc),
             ),
             const SizedBox(height: 10),
           ],
