@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import 'browser_service.dart';
+import 'dictionary_service.dart';
 import 'time_rules_screen.dart';
 import 'search_engine_picker.dart';
 import 'password_dialog.dart';
@@ -20,7 +21,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
     WebUri url,
     InAppWebViewController? controller, {
     BlockReason reason = BlockReason.content,
-    String? matchedWord,
+    BlockMatch? match,
   }) {
     if (svc.canSkipAuth(url.toString())) {
       controller?.loadUrl(urlRequest: URLRequest(url: url));
@@ -203,7 +204,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        if (matchedWord != null) ...[
+                        if (match != null) ...[
                           const SizedBox(height: 4),
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -215,7 +216,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
-                              '"$matchedWord"',
+                              '"${match.displayWord}"',
                               style: TextStyle(
                                 color: reasonColor,
                                 fontSize: 12,
@@ -224,6 +225,55 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                               ),
                             ),
                           ),
+                          if (match.token != match.displayWord) ...[
+                            const SizedBox(height: 2),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color: reasonColor.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                'Token: ${match.token}',
+                                style: TextStyle(
+                                  color: reasonColor.withOpacity(0.8),
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (match.detectedLanguage != null &&
+                              !svc.dictionaryService
+                                  .isSupportedLocale(match.detectedLanguage!)) ...[
+                            const SizedBox(height: 4),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.amber.withOpacity(0.15),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(
+                                  color: Colors.amber.withOpacity(0.4),
+                                ),
+                              ),
+                              child: Text(
+                                'Słowo najprawdopodobniej pochodzi z języka "${match.detectedLanguage}", '
+                                'który nie jest obsługiwany. '
+                                'Jeśli uważasz, że słowo zostało błędnie zablokowane, '
+                                'pobierz obsługę języka ${match.detectedLanguage}.',
+                                style: const TextStyle(
+                                  color: Colors.amber,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ],
                     ),
@@ -678,6 +728,18 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                     onTap: () {
                       Navigator.pop(context);
                       _showBlockingMenu(svc);
+                    },
+                  ),
+                  _drawerTile(
+                    icon: Icons.language,
+                    iconColor: Colors.teal,
+                    title: 'Słowniki',
+                    subtitle: svc.dictionaryService.supportedLocales.isEmpty
+                        ? 'Brak'
+                        : svc.dictionaryService.supportedLocales.length.toString(),
+                    onTap: () {
+                      Navigator.pop(context);
+                      showDictionaryManager(svc);
                     },
                   ),
                   _drawerTile(
@@ -1137,6 +1199,186 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
     );
   }
 
+  // ── Słowniki ────────────────────────────────────────────────────────────
+
+  void showDictionaryManager(BrowserService svc) {
+    final dictDir =
+        '${svc.dictionaryService.baseDir ?? ''}/dictionaries';
+    final downloadProgress = <String, double>{};
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) {
+          final installed = svc.dictionaryService.supportedLocales;
+          return AlertDialog(
+            backgroundColor: const Color(0xFF202124),
+            title: const Text(
+              'Słowniki',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Pobierz słowniki do weryfikacji słów.',
+                    style: TextStyle(color: Colors.grey, fontSize: 13),
+                  ),
+                  const SizedBox(height: 12),
+                  Flexible(
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: [
+                        for (final avail in DictionaryService.available)
+                          _dictTile(
+                            avail: avail,
+                            installed: installed.contains(avail.locale),
+                            wordCount: installed.contains(avail.locale)
+                                ? svc.dictionaryService.wordCount(avail.locale)
+                                : null,
+                            progress: downloadProgress[avail.locale],
+                            onDownload: () async {
+                              downloadProgress[avail.locale] = 0.0;
+                              setD(() {});
+                              final result = await svc.dictionaryService
+                                  .downloadDictionary(avail.locale, dictDir,
+                                      onProgress: (p) {
+                                downloadProgress[avail.locale] = p;
+                                setD(() {});
+                              });
+                              if (ctx.mounted) {
+                                downloadProgress.remove(avail.locale);
+                                if (result != null) {
+                                  await DictionaryService.saveDownloadedLocales(
+                                    svc.dictionaryService.supportedLocales,
+                                  );
+                                } else {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Nie udało się pobrać słownika. Sprawdź połączenie.'),
+                                      backgroundColor: Colors.redAccent,
+                                    ),
+                                  );
+                                }
+                                setD(() {});
+                              }
+                            },
+                            onRemove: () async {
+                              await svc.dictionaryService.removeDictionary(
+                                  avail.locale, dictDir);
+                              await DictionaryService.saveDownloadedLocales(
+                                svc.dictionaryService.supportedLocales,
+                              );
+                              setD(() {});
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text(
+                  'ZAMKNIJ',
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _dictTile({
+    required AvailableDictionary avail,
+    required bool installed,
+    required int? wordCount,
+    double? progress,
+    required VoidCallback onDownload,
+    required VoidCallback onRemove,
+  }) {
+    final isDownloading = progress != null;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: installed
+            ? Colors.teal.withOpacity(0.12)
+            : Colors.grey.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      avail.name,
+                      style: TextStyle(
+                        color: installed ? Colors.teal : Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                      ),
+                    ),
+                    if (wordCount != null)
+                      Text(
+                        '$wordCount słów',
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 11,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (isDownloading)
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else if (installed)
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                  tooltip: 'Usuń',
+                  onPressed: onRemove,
+                )
+              else
+                IconButton(
+                  icon: const Icon(Icons.download, color: Colors.blue, size: 20),
+                  tooltip: 'Pobierz',
+                  onPressed: onDownload,
+                ),
+            ],
+          ),
+          if (isDownloading) ...[
+            const SizedBox(height: 4),
+            LinearProgressIndicator(
+              value: progress,
+              backgroundColor: Colors.grey.withOpacity(0.2),
+              valueColor: const AlwaysStoppedAnimation<Color>(Colors.teal),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '${(progress * 100).toStringAsFixed(0)}%',
+              style: const TextStyle(color: Colors.grey, fontSize: 10),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   // ── Blokady ──────────────────────────────────────────────────────────────
 
   void _showBlockingMenu(BrowserService svc) {
@@ -1369,10 +1611,14 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                       },
                       child: ListTile(
                         selected: isActive && !selectionMode,
-                        selectedTileColor: Colors.blue.withOpacity(0.1),
+                        selectedTileColor: svc.tabs[index].isIncognito
+                            ? Colors.purple.withOpacity(0.15)
+                            : Colors.blue.withOpacity(0.1),
                         tileColor: isSelected
                             ? Colors.blue.withOpacity(0.15)
-                            : null,
+                            : svc.tabs[index].isIncognito
+                                ? Colors.purple.withOpacity(0.05)
+                                : null,
                         leading: selectionMode
                             ? Checkbox(
                                 value: isSelected,
@@ -1390,7 +1636,14 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                 },
                                 activeColor: Colors.blue,
                               )
-                            : const Icon(Icons.tab, color: Colors.blue),
+                            : Icon(
+                                svc.tabs[index].isIncognito
+                                    ? Icons.visibility_off
+                                    : Icons.tab,
+                                color: svc.tabs[index].isIncognito
+                                    ? Colors.purple
+                                    : Colors.blue,
+                              ),
                         title: Row(
                           children: [
                             if (svc.tabs[index].isPlayingAudio)
@@ -1405,7 +1658,11 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                             Expanded(
                               child: Text(
                                 svc.tabs[index].title,
-                                style: const TextStyle(color: Colors.white),
+                                style: TextStyle(
+                                  color: svc.tabs[index].isIncognito
+                                      ? Colors.purple.shade200
+                                      : Colors.white,
+                                ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -1493,7 +1750,6 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
 
   // ── Czarna lista ─────────────────────────────────────────────────────────
 
-  // Edytor tylko słów kluczowych (bez grupy Strony)
   void _showKeywordsEditor(BrowserService svc) {
     bool authenticated = svc.savedPassword == null;
     final addControllers = <String, TextEditingController>{};

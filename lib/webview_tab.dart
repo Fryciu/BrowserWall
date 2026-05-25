@@ -22,7 +22,7 @@ class WebViewTab extends StatefulWidget {
     WebUri,
     InAppWebViewController?, {
     BlockReason reason,
-    String? matchedWord,
+    BlockMatch? match,
   })
   onPasswordRequired;
 
@@ -483,7 +483,7 @@ class _WebViewTabState extends State<WebViewTab>
                       WebUri(currentUrl),
                       c,
                       reason: BlockReason.timeLimit,
-                      matchedWord: domain,
+                      match: BlockMatch(domain, domain),
                     );
                   }
                 }
@@ -541,7 +541,7 @@ class _WebViewTabState extends State<WebViewTab>
                 await _openExternalUrl(url);
               }
             });
-            Future.microtask(() {
+            Future.microtask(() async {
               String urlToLoad = tab.url;
               if (svc.pendingShortcutUrl != null &&
                   svc.tabs.indexOf(tab) == svc.currentTabIndex) {
@@ -549,15 +549,15 @@ class _WebViewTabState extends State<WebViewTab>
                 svc.pendingShortcutUrl = null;
               }
 
-              final blocked = svc.handleNavigation(
+              final blocked = await svc.handleNavigation(
                 urlToLoad,
                 c,
-                (url, ctrl, reason, matchedWord) => widget.onPasswordRequired(
+                (url, ctrl, reason, match) => widget.onPasswordRequired(
                   svc,
                   url,
                   ctrl,
                   reason: reason,
-                  matchedWord: matchedWord,
+                  match: match,
                 ),
                 (message) {
                   if (mounted) {
@@ -584,15 +584,15 @@ class _WebViewTabState extends State<WebViewTab>
 
             if (urlString.startsWith('http://') ||
                 urlString.startsWith('https://')) {
-              final blocked = svc.handleNavigation(
+              final blocked = await svc.handleNavigation(
                 urlString,
                 c,
-                (url, ctrl, reason, matchedWord) => widget.onPasswordRequired(
+                (url, ctrl, reason, match) => widget.onPasswordRequired(
                   svc,
                   url,
                   ctrl,
                   reason: reason,
-                  matchedWord: matchedWord,
+                  match: match,
                 ),
                 (message) {
                   if (mounted) {
@@ -975,15 +975,15 @@ class _WebViewTabState extends State<WebViewTab>
             }
 
             // Obsługa nawigacji (hasła, czarna lista)
-            final blocked = svc.handleNavigation(
+            final blocked = await svc.handleNavigation(
               urlString,
               c,
-              (url, ctrl, reason, matchedWord) => widget.onPasswordRequired(
+              (url, ctrl, reason, match) => widget.onPasswordRequired(
                 svc,
                 url,
                 ctrl,
                 reason: reason,
-                matchedWord: matchedWord,
+                match: match,
               ),
               (message) => ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(

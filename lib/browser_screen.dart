@@ -363,20 +363,20 @@ class _BrowserScreenState extends State<BrowserScreen>
                                     );
                                   }
                                 },
-                                onSubmitted: (v) {
+                                onSubmitted: (v) async {
                                   final targetUrl = svc.buildTargetUrl(v);
                                   final targetUrlString = targetUrl.toString();
 
-                                  final blocked = svc.handleNavigation(
+                                  final blocked = await svc.handleNavigation(
                                     targetUrlString,
                                     svc.currentTab.controller!,
-                                    (url, ctrl, reason, matchedWord) =>
+                                    (url, ctrl, reason, match) =>
                                         showPasswordDialog(
                                           svc,
                                           url,
                                           ctrl,
                                           reason: reason,
-                                          matchedWord: matchedWord,
+                                          match: match,
                                         ),
                                     (message) => ScaffoldMessenger.of(context)
                                         .showSnackBar(
@@ -472,14 +472,14 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 url,
                                 ctrl, {
                                 reason = BlockReason.content,
-                                String? matchedWord,
+                                BlockMatch? match,
                               }) {
                                 showPasswordDialog(
                                   svc,
                                   url,
                                   ctrl,
                                   reason: reason,
-                                  matchedWord: matchedWord,
+                                  match: match,
                                 );
                               },
                         ),

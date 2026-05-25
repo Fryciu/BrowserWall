@@ -11,6 +11,8 @@ import 'package:path/path.dart' as pathh;
 import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:device_info_plus/device_info_plus.dart';
+import 'dictionary_service.dart';
+import 'package:google_mlkit_language_id/google_mlkit_language_id.dart';
 
 // ─────────────────────────────────────────────
 //  MODEL
@@ -22,13 +24,33 @@ class TabModel {
   String title;
   bool loaded;
   bool isPlayingAudio = false;
-  TabModel({required this.url, this.title = "Nowa karta", this.loaded = false});
+  bool isIncognito = false;
+  TabModel({
+    required this.url,
+    this.title = "Nowa karta",
+    this.loaded = false,
+    this.isIncognito = false,
+  });
 }
 
 // ─────────────────────────────────────────────
 //  SERWIS (cała logika biznesowa / backendowa)
 // ─────────────────────────────────────────────
 enum BlockReason { none, proxy, content, blacklist, timeLimit }
+
+/// Informacja o dopasowaniu podczas blokowania.
+class BlockMatch {
+  final String word;
+  final String? translation;
+  final String token;
+  String? detectedLanguage;
+
+  BlockMatch(this.word, this.token, {this.translation, this.detectedLanguage});
+
+  String get displayWord => translation != null ? '$word ($translation)' : word;
+
+  bool get isFuzzyMatch => token != word;
+}
 
 /// Tryb reguły czasowej
 enum TimeRuleMode { dailyLimit, timeWindow }
@@ -105,6 +127,9 @@ class BrowserService extends ChangeNotifier {
   // --- Stan ---
   List<TabModel> tabs = [TabModel(url: 'https://www.google.com')];
   int currentTabIndex = 0;
+
+  final DictionaryService dictionaryService = DictionaryService();
+  LanguageIdentifier? _languageIdentifier;
 
   List<String> blackList = [];
 
@@ -323,6 +348,7 @@ class BrowserService extends ChangeNotifier {
     _userAgent = value ? _desktopUA : _mobileUA;
     final prefs = await _getPrefs;
     await prefs.setBool('desktop_mode', value);
+    await prefs.setString('cached_user_agent', _userAgent);
     // Przeładuj wszystkie otwarte karty z nowym UA
     for (final tab in tabs) {
       if (tab.controller != null) {
@@ -359,7 +385,6 @@ class BrowserService extends ChangeNotifier {
   bool _pornKeywordsExpandedLoaded = false;
 
   Map<String, List<String>> blackListGroups = {
-    'Strony': [],
     'Słowa kluczowe': [],
   };
   Set<String> remoteBlockedDomains = {};
@@ -502,7 +527,25 @@ class BrowserService extends ChangeNotifier {
   Future<void> get ready => _readyCompleter.future;
 
   Future<void> init() async {
+    _prefsInstance = await SharedPreferences.getInstance();
+    _desktopMode = _prefsInstance!.getBool('desktop_mode') ?? false;
+    if (_desktopMode) {
+      _userAgent = _desktopUA;
+    } else {
+      final cached = _prefsInstance!.getString('cached_user_agent');
+      if (cached != null && cached.isNotEmpty) {
+        _userAgent = cached;
+      }
+    }
     await _initUserAgent();
+
+    // Inicjalizacja słowników Hunspell z katalogu dokumentów
+    final dir = await getApplicationDocumentsDirectory();
+    final dictDir = '${dir.path}/dictionaries';
+    dictionaryService.baseDir = dir.path;
+    await dictionaryService.loadAllFromDir(dictDir);
+    print("dicts loaded: ${dictionaryService.supportedLocales}");
+
     final t0 = DateTime.now();
     await loadData();
     print("loadData: ${DateTime.now().difference(t0).inMilliseconds}ms");
@@ -533,13 +576,6 @@ class BrowserService extends ChangeNotifier {
   Future<SharedPreferences> get _getPrefs async {
     _prefsInstance ??= await SharedPreferences.getInstance();
     return _prefsInstance!;
-  }
-
-  void debugPrintPassword() {
-    assert(() {
-      debugPrint("🔑 Aktualne hasło: $savedPassword");
-      return true;
-    }());
   }
 
   Future<void> saveAdBlockWhitelist() async {
@@ -736,6 +772,7 @@ class BrowserService extends ChangeNotifier {
     // Zapisz też słownik tłumaczeń
     await prefs.setString('word_translations', json.encode(_wordTranslations));
     debugPrint('✅ pornKeywords expanded: ${expanded.length} słów');
+    debugPrint('Saved password: ${savedPassword}');
   }
 
   // Nazwy własne i marki których NIE wolno dodać jako tłumaczenia
@@ -804,15 +841,16 @@ class BrowserService extends ChangeNotifier {
 
   /// Sprawdza czy URL zawiera jakiekolwiek słowo z rozszerzonej listy
   bool _matchesPornKeywordsExpanded(String normalizedUrl) {
+    final tokens = _urlTokens(normalizedUrl);
     for (final baseWord in pornKeywords) {
-      if (_fuzzyMatchesUrl(baseWord, normalizedUrl)) {
+      if (_fuzzyMatchesTokens(baseWord, tokens) != null) {
         debugPrint('🚨 MATCH baseWord: $baseWord → $normalizedUrl');
         return true;
       }
       final trans = _wordTranslations[baseWord];
       if (trans != null) {
         for (final t in trans) {
-          if (_fuzzyMatchesUrl(t, normalizedUrl)) {
+          if (_fuzzyMatchesTokens(t, tokens) != null) {
             debugPrint(
               '🚨 MATCH translation: $t (z: $baseWord) → $normalizedUrl',
             );
@@ -824,26 +862,59 @@ class BrowserService extends ChangeNotifier {
     return false;
   }
 
+  /// Zwraca dopasowane słowo z pornKeywords (+ tłumaczenie) lub null.
+  /// Ekstrahuje tokeny raz — szybsze niż osobne _matchesPornKeywordsExpanded + pętla.
+  BlockMatch? _matchedPornKeyword(String normalizedUrl) {
+    final tokens = _urlTokens(normalizedUrl);
+    for (final baseWord in pornKeywords) {
+      final matchedToken = _fuzzyMatchesTokens(baseWord, tokens);
+      if (matchedToken != null) return BlockMatch(baseWord, matchedToken);
+      final trans = _wordTranslations[baseWord];
+      if (trans != null) {
+        for (final t in trans) {
+          final matchedTokenTrans = _fuzzyMatchesTokens(t, tokens);
+          if (matchedTokenTrans != null) {
+            return BlockMatch(baseWord, matchedTokenTrans, translation: t);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   /// Sprawdza czy URL pasuje do któregoś słowa z blacklisty (+ tłumaczenia)
   bool _matchesBlacklistExpanded(String normalizedUrl) {
+    final tokens = _urlTokens(normalizedUrl);
     for (final entry in blackList) {
       final override = _wordThresholds[entry];
-      if (override == 0) {
-        if (normalizedUrl.contains(entry.toLowerCase())) return true;
-      } else {
-        if (normalizedUrl.contains(entry.toLowerCase()) ||
-            _fuzzyMatchesUrl(entry, normalizedUrl, overrideThreshold: override))
+      if (entry.length < 4) {
+        if (_fuzzyMatchesTokens(
+              entry,
+              tokens,
+              overrideThreshold: override ?? 0,
+            ) !=
+            null)
           return true;
+      } else {
+        if (override == 0) {
+          if (normalizedUrl.contains(entry.toLowerCase())) return true;
+        } else {
+          if (normalizedUrl.contains(entry.toLowerCase()) ||
+              _fuzzyMatchesTokens(entry, tokens, overrideThreshold: override) !=
+                  null)
+            return true;
+        }
       }
       final translations = _wordTranslations[entry];
       if (translations != null) {
         for (final t in translations) {
           final overrideTrans = _wordThresholds[t];
-          if (_fuzzyMatchesUrl(
-            t,
-            normalizedUrl,
-            overrideThreshold: overrideTrans,
-          ))
+          if (_fuzzyMatchesTokens(
+                t,
+                tokens,
+                overrideThreshold: overrideTrans,
+              ) !=
+              null)
             return true;
         }
       }
@@ -851,29 +922,39 @@ class BrowserService extends ChangeNotifier {
     return false;
   }
 
-  /// Zwraca dopasowane słowo z blacklisty (+ tłumaczenia) lub null
-  String? _matchedBlacklistWord(String normalizedUrl) {
+  /// Zwraca dopasowane słowo z blacklisty (+ tłumaczenie) lub null
+  BlockMatch? _matchedBlacklistWord(String normalizedUrl) {
+    final tokens = _urlTokens(normalizedUrl);
     for (final entry in blackList) {
       final override = _wordThresholds[entry];
-      final baseMatch = override == 0
-          ? normalizedUrl.contains(entry.toLowerCase())
-          : (normalizedUrl.contains(entry.toLowerCase()) ||
-                _fuzzyMatchesUrl(
-                  entry,
-                  normalizedUrl,
-                  overrideThreshold: override,
-                ));
-      if (baseMatch) return entry;
+      final baseMatch = entry.length < 4
+          ? _fuzzyMatchesTokens(entry, tokens, overrideThreshold: override ?? 0)
+          : (override == 0
+                ? (normalizedUrl.contains(entry.toLowerCase()) ? entry : null)
+                : (normalizedUrl.contains(entry.toLowerCase())
+                      ? entry
+                      : _fuzzyMatchesTokens(
+                          entry,
+                          tokens,
+                          overrideThreshold: override,
+                        )));
+      if (baseMatch != null) {
+        // Gdy baseMatch to entry (contains), token = entry; gdy String? z fuzzy, to token
+        final token = baseMatch == entry ? entry : baseMatch;
+        return BlockMatch(entry, token);
+      }
       final translations = _wordTranslations[entry];
       if (translations != null) {
         for (final t in translations) {
           final overrideTrans = _wordThresholds[t];
-          if (_fuzzyMatchesUrl(
+          final matchedToken = _fuzzyMatchesTokens(
             t,
-            normalizedUrl,
+            tokens,
             overrideThreshold: overrideTrans,
-          ))
-            return '$entry ($t)';
+          );
+          if (matchedToken != null) {
+            return BlockMatch(entry, matchedToken, translation: t);
+          }
         }
       }
     }
@@ -881,19 +962,21 @@ class BrowserService extends ChangeNotifier {
   }
 
   Future<void> _initUserAgent() async {
+    if (_desktopMode) return;
     try {
       final info = DeviceInfoPlugin();
       final android = await info.androidInfo;
-      final model = android.model; // np. "Samsung Galaxy S23"
-      final version = android.version.release; // np. "14"
+      final model = android.model;
+      final version = android.version.release;
       _userAgent =
           'Mozilla/5.0 (Linux; Android $version; $model) '
           'AppleWebKit/537.36 (KHTML, like Gecko) '
           'Chrome/120.0.0.0 Mobile Safari/537.36';
       debugPrint('📱 User Agent: $_userAgent');
+      final prefs = await _getPrefs;
+      await prefs.setString('cached_user_agent', _userAgent);
     } catch (e) {
       debugPrint('⚠️ Nie udało się pobrać modelu urządzenia: $e');
-      // Zostaje domyślny _userAgent
     }
   }
 
@@ -1295,8 +1378,7 @@ class BrowserService extends ChangeNotifier {
     adBlockEnabled = p.getBool('adblock_enabled') ?? true;
     adultFilterEnabled = p.getBool('adult_filter_enabled') ?? true;
     incognitoMode = p.getBool('incognito_mode') ?? false;
-    blackList =
-        p.getStringList('blocked_pages') ?? ["facebook.com", "instagram.com"];
+    blackList = p.getStringList('blocked_pages') ?? [];
 
     // Wczytaj grupy
     final groupsData = p.getString('blacklist_groups');
@@ -1307,13 +1389,17 @@ class BrowserService extends ChangeNotifier {
           (k, v) => MapEntry(k, List<String>.from(v as List)),
         );
       } catch (_) {}
-    } else {
-      // Pierwsza migracja: wpisz istniejące wpisy do grupy "Strony"
-      blackListGroups = {
-        'Strony': List<String>.from(blackList),
-        'Słowa kluczowe': [],
-      };
     }
+
+    // Usuń grupę 'Strony' (zawierała strony www, które nie miały UI do kasowania)
+    if (blackListGroups.containsKey('Strony')) {
+      blackListGroups.remove('Strony');
+      await p.setString('blacklist_groups', json.encode(blackListGroups));
+    }
+    // Zawsze przebuduj blackList z grup — usuwa resztki starych domen z flat listy
+    _syncBlackListFromGroups();
+    // Usuń starą flat listę — od teraz tylko grupy są źródłem prawdy
+    await p.remove('blocked_pages');
     adBlockWhitelist = p.getStringList('adblock_whitelist') ?? [];
     homePageUrl = p.getString('home_page_url') ?? 'https://www.google.com';
 
@@ -1553,13 +1639,15 @@ class BrowserService extends ChangeNotifier {
     // Pobierz tłumaczenia w tle — pokaż pasek postępu od razu
     translationProgress[clean] = 0.0;
     notifyListeners();
-    fetchAndSaveTranslations(clean).then((_) {
-      translationProgress.remove(clean);
-      notifyListeners();
-    }).catchError((_) {
-      translationProgress.remove(clean);
-      notifyListeners();
-    });
+    fetchAndSaveTranslations(clean)
+        .then((_) {
+          translationProgress.remove(clean);
+          notifyListeners();
+        })
+        .catchError((_) {
+          translationProgress.remove(clean);
+          notifyListeners();
+        });
   }
 
   Future<void> removeFromBlackListGroup(String group, String entry) async {
@@ -1657,6 +1745,393 @@ class BrowserService extends ChangeNotifier {
   //  FUZZY MATCHING
   // ─────────────────────────────────────────────
 
+  /// Popularne angielskie słowa — jeżeli token URL pasuje przez Levenshteina
+  /// do zablokowanego słowa, ale token jest prawdziwym słowem, nie blokuj.
+  static const _commonWords = {
+    'about', 'above', 'absent', 'absorb', 'abstract', 'accept', 'access',
+    'account', 'achieve', 'acid', 'across', 'act', 'action', 'active',
+    'activity', 'actor', 'actual', 'add', 'address', 'adjust', 'adult',
+    'advance', 'advice', 'affair', 'affect', 'afford', 'after', 'again',
+    'age', 'agent', 'agree', 'ahead', 'aid', 'aim', 'air', 'airport',
+    'alarm', 'album', 'alive', 'all', 'allow', 'almost', 'alone', 'along',
+    'already', 'also', 'alter', 'always', 'among', 'amount', 'ancient',
+    'angle', 'animal', 'announce', 'annual', 'another', 'answer', 'any',
+    'apart', 'appear', 'apple', 'apply', 'approach', 'area', 'argue',
+    'arise', 'arm', 'army', 'around', 'arrange', 'arrive', 'art', 'article',
+    'artist', 'ask', 'aspect', 'assault', 'assist', 'assume', 'attack',
+    'attempt', 'attend', 'attract', 'authority', 'auto', 'available',
+    'average', 'avoid', 'award', 'aware', 'baby', 'back', 'background',
+    'bad', 'bag', 'balance', 'ball', 'ban', 'band', 'bank', 'bar', 'bare',
+    'bargain', 'base', 'basic', 'basis', 'battle', 'beach', 'bear', 'beat',
+    'beauty', 'become', 'bed', 'beer', 'before', 'begin', 'behave', 'behind',
+    'being', 'belief', 'believe', 'bell', 'belong', 'below', 'belt', 'bench',
+    'bend', 'benefit', 'best', 'better', 'beyond', 'bicycle', 'big', 'bill',
+    'bind', 'bird', 'birth', 'bit', 'bite', 'black', 'blade', 'blame',
+    'blank', 'blast', 'bleed', 'blend', 'bless', 'blind', 'block', 'blood',
+    'blow', 'blue', 'board', 'boat', 'body', 'boil', 'bond', 'bone', 'book',
+    'boost', 'border', 'born', 'boss', 'both', 'bother', 'bottle', 'bottom',
+    'bound', 'bow', 'bowl', 'box', 'boy', 'brain', 'branch', 'brand',
+    'brave', 'bread', 'break', 'breath', 'breed', 'brick', 'bridge', 'brief',
+    'bright', 'bring', 'broad', 'broken', 'brother', 'brown', 'brush',
+    'bubble', 'budget', 'build', 'bunch', 'burden', 'burn', 'burst', 'bus',
+    'business', 'busy', 'button', 'buy', 'cabinet', 'cable', 'cake',
+    'calculate', 'call', 'calm', 'camera', 'camp', 'campaign', 'can',
+    'cancel', 'cancer', 'candidate', 'cap', 'capital', 'capture', 'car',
+    'carbon', 'card', 'care', 'career', 'careful', 'carry', 'case', 'cash',
+    'cast', 'castle', 'cat', 'catch', 'category', 'cattle', 'cause',
+    'ceiling', 'cell', 'center', 'central', 'century', 'chain', 'chair',
+    'chairman', 'chamber', 'champion', 'chance', 'change', 'channel',
+    'chapter', 'character', 'charge', 'charity', 'chart', 'chase', 'cheap',
+    'check', 'cheese', 'chest', 'chicken', 'chief', 'child', 'chip',
+    'choice', 'choose', 'church', 'circle', 'circumstance', 'citizen',
+    'city', 'civil', 'claim', 'class', 'classic', 'clean', 'clear', 'climb',
+    'clock', 'close', 'clothe', 'cloud', 'club', 'coal', 'coast', 'code',
+    'coffee', 'coin', 'cold', 'collapse', 'collect', 'college', 'color',
+    'column', 'combat', 'combine', 'come', 'comfort', 'command', 'comment',
+    'commit', 'committee', 'common', 'communicate', 'community', 'company',
+    'compare', 'compete', 'competition', 'complete', 'complex', 'computer',
+    'concern', 'condition', 'conduct', 'conference', 'confidence', 'confirm',
+    'conflict', 'confuse', 'connect', 'conscious', 'consent', 'consequence',
+    'consider', 'consist', 'constant', 'construct', 'consult', 'consume',
+    'contact', 'contain', 'content', 'contest', 'context', 'continent',
+    'continue', 'contract', 'contrast', 'contribute', 'control', 'convert',
+    'convince', 'cook', 'cool', 'cooperate', 'cope', 'copy', 'core',
+    'corner', 'correct', 'cost', 'cotton', 'council', 'count', 'country',
+    'county', 'couple', 'courage', 'course', 'court', 'cousin', 'cover',
+    'crack', 'craft', 'crash', 'create', 'credit', 'crew', 'crime',
+    'criminal', 'crisis', 'criteria', 'critical', 'crop', 'cross', 'crowd',
+    'crucial', 'cry', 'cultural', 'culture', 'cup', 'cure', 'curious',
+    'current', 'curtain', 'curve', 'custom', 'customer', 'cut', 'cycle',
+    'daily', 'damage', 'dance', 'danger', 'dare', 'dark', 'data', 'date',
+    'daughter', 'day', 'dead', 'deal', 'dear', 'death', 'debate', 'debt',
+    'decade', 'decide', 'decision', 'declare', 'decline', 'deep', 'defeat',
+    'defend', 'define', 'degree', 'delay', 'deliver', 'demand', 'deny',
+    'depart', 'depend', 'deposit', 'describe', 'desert', 'design', 'desk',
+    'detail', 'detect', 'develop', 'device', 'devote', 'diamond', 'diet',
+    'differ', 'different', 'difficult', 'dig', 'dinner', 'direct', 'dirty',
+    'discover', 'discuss', 'disease', 'dish', 'dismiss', 'display',
+    'distance', 'distinct', 'district', 'divide', 'doctor', 'document',
+    'dog', 'domain', 'domestic', 'dominate', 'door', 'double', 'doubt',
+    'down', 'dozen', 'draft', 'drag', 'drama', 'draw', 'dream', 'dress',
+    'drink', 'drive', 'drop', 'drug', 'dry', 'due', 'during', 'dust',
+    'duty', 'each', 'eager', 'ear', 'early', 'earn', 'earth', 'ease',
+    'east', 'eastern', 'easy', 'eat', 'economic', 'economy', 'edge',
+    'edit', 'editor', 'educate', 'effect', 'effort', 'egg', 'eight',
+    'either', 'elbow', 'elder', 'elect', 'element', 'elephant', 'elite',
+    'else', 'emerge', 'emotion', 'emperor', 'employ', 'empty', 'enable',
+    'encounter', 'encourage', 'end', 'enemy', 'energy', 'enforce', 'engage',
+    'engine', 'enjoy', 'enormous', 'enough', 'ensure', 'enter', 'entire',
+    'entry', 'environment', 'equal', 'equip', 'error', 'escape', 'essay',
+    'essential', 'establish', 'estate', 'estimate', 'evaluate', 'even',
+    'evening', 'event', 'ever', 'every', 'evidence', 'evolution', 'exact',
+    'examine', 'example', 'excellent', 'except', 'exchange', 'excite',
+    'exclude', 'excuse', 'execute', 'exercise', 'exhibit', 'exist', 'exit',
+    'expand', 'expect', 'expense', 'experiment', 'expert', 'explain',
+    'exploit', 'explore', 'export', 'expose', 'express', 'extend', 'extent',
+    'external', 'extra', 'extreme', 'eye', 'fabric', 'face', 'facility',
+    'fact', 'factor', 'factory', 'faculty', 'fail', 'failure', 'fair',
+    'faith', 'fall', 'false', 'familiar', 'family', 'famous', 'fan',
+    'fantasy', 'far', 'farm', 'fashion', 'fast', 'fat', 'fate', 'father',
+    'fault', 'favor', 'fear', 'feature', 'federal', 'fee', 'feed', 'feel',
+    'fellow', 'female', 'fence', 'few', 'fiber', 'fiction', 'field',
+    'fifteen', 'fight', 'figure', 'file', 'fill', 'film', 'final',
+    'financial', 'find', 'fine', 'finger', 'finish', 'fire', 'firm',
+    'first', 'fish', 'fishing', 'fit', 'fitness', 'five', 'fix', 'flag',
+    'flame', 'flash', 'flat', 'flavor', 'flee', 'flesh', 'flight', 'float',
+    'flood', 'floor', 'flow', 'flower', 'fly', 'focus', 'fold', 'folk',
+    'follow', 'food', 'foot', 'force', 'foreign', 'forest', 'forever',
+    'forget', 'form', 'formal', 'former', 'formula', 'forth', 'fortune',
+    'forward', 'found', 'foundation', 'four', 'frame', 'free', 'freedom',
+    'freeze', 'french', 'frequent', 'fresh', 'friend', 'front', 'frozen',
+    'fruit', 'fuel', 'full', 'fun', 'function', 'fund', 'funny', 'furniture',
+    'further', 'future', 'gain', 'galaxy', 'gallery', 'game', 'gap',
+    'garage', 'garden', 'gas', 'gate', 'gather', 'gender', 'general',
+    'generate', 'gentle', 'genuine', 'gesture', 'get', 'giant', 'gift',
+    'girl', 'give', 'glad', 'glance', 'glass', 'global', 'glove', 'glow',
+    'goal', 'god', 'gold', 'golden', 'good', 'govern', 'grab', 'grace',
+    'grade', 'grain', 'grand', 'grant', 'grass', 'grateful', 'grave',
+    'great', 'green', 'greet', 'ground', 'group', 'grow', 'growth',
+    'guard', 'guess', 'guest', 'guide', 'guilt', 'gun', 'habit', 'hair',
+    'half', 'hall', 'hand', 'handle', 'hang', 'happen', 'happy', 'hard',
+    'hardly', 'harm', 'hat', 'hate', 'have', 'head', 'health', 'hear',
+    'heart', 'heat', 'heaven', 'heavy', 'height', 'hello', 'help', 'hence',
+    'herb', 'here', 'heritage', 'hero', 'hide', 'high', 'highlight',
+    'highly', 'hill', 'hint', 'hip', 'hire', 'history', 'hit', 'hold',
+    'hole', 'holiday', 'hollow', 'holy', 'home', 'honest', 'honor',
+    'hook', 'hope', 'horizon', 'horror', 'horse', 'hospital', 'host',
+    'hotel', 'hour', 'house', 'huge', 'human', 'humor', 'hundred', 'hunt',
+    'hurt', 'husband', 'hypothesis', 'ice', 'ideal', 'identify', 'ignore',
+    'ill', 'illegal', 'image', 'imagine', 'impact', 'implement', 'import',
+    'impose', 'improve', 'include', 'income', 'incorporate', 'increase',
+    'indeed', 'independent', 'index', 'indicate', 'individual', 'industry',
+    'infant', 'influence', 'inform', 'initial', 'injury', 'inner', 'input',
+    'inquiry', 'insect', 'inside', 'insist', 'install', 'instance',
+    'instant', 'instead', 'institute', 'instrument', 'insurance', 'intact',
+    'integrate', 'intellectual', 'intelligence', 'intend', 'intense',
+    'intention', 'interact', 'interest', 'interior', 'internal',
+    'international', 'internet', 'interpret', 'interval', 'intervene',
+    'interview', 'intimate', 'into', 'introduce', 'invade', 'invent',
+    'invest', 'investigate', 'invite', 'involve', 'iron', 'island', 'isolate',
+    'issue', 'item', 'itself', 'jacket', 'jail', 'jet', 'jewel', 'job',
+    'join', 'joint', 'joke', 'journal', 'journey', 'joy', 'judge', 'juice',
+    'jump', 'junior', 'jury', 'just', 'justice', 'justify', 'keen', 'keep',
+    'key', 'kick', 'kid', 'kill', 'kind', 'king', 'kiss', 'kitchen', 'knee',
+    'knife', 'knock', 'know', 'knowledge', 'label', 'labor', 'laboratory',
+    'lack', 'lady', 'lake', 'land', 'landscape', 'language', 'large', 'last',
+    'late', 'later', 'latter', 'laugh', 'launch', 'law', 'lawyer', 'lay',
+    'layer', 'lead', 'leader', 'leaf', 'league', 'lean', 'learn', 'least',
+    'leather', 'leave', 'lecture', 'left', 'leg', 'legal', 'leisure',
+    'lemon', 'lend', 'length', 'lesson', 'let', 'letter', 'level', 'liberal',
+    'library', 'license', 'lie', 'life', 'lift', 'light', 'like', 'likely',
+    'limit', 'line', 'link', 'lion', 'lip', 'list', 'listen', 'literature',
+    'little', 'live', 'load', 'loan', 'local', 'locate', 'lock', 'log',
+    'logic', 'long', 'look', 'lord', 'lose', 'loss', 'lost', 'lot', 'loud',
+    'love', 'lovely', 'low', 'lower', 'luck', 'lunch', 'lung', 'machine',
+    'mad', 'magazine', 'magic', 'main', 'maintain', 'major', 'make', 'male',
+    'manage', 'manifest', 'manner', 'manufacture', 'many', 'map', 'march',
+    'margin', 'mark', 'market', 'marriage', 'master', 'match', 'mate',
+    'material', 'matter', 'mature', 'maximum', 'mayor', 'meal', 'mean',
+    'meaning', 'means', 'measure', 'meat', 'mechanism', 'media', 'medical',
+    'medicine', 'medium', 'meet', 'meeting', 'member', 'memory', 'mental',
+    'mention', 'menu', 'mere', 'merely', 'message', 'metal', 'meter',
+    'method', 'middle', 'might', 'mild', 'military', 'milk', 'mill', 'mind',
+    'mine', 'minister', 'minor', 'minute', 'miracle', 'mirror', 'miss',
+    'missing', 'mission', 'mistake', 'mix', 'mixture', 'mobile', 'model',
+    'moderate', 'modern', 'modest', 'modify', 'module', 'molecular', 'moment',
+    'monitor', 'month', 'mood', 'moon', 'moral', 'more', 'moreover', 'morning',
+    'most', 'mostly', 'mother', 'motion', 'motor', 'mountain', 'mouse',
+    'mouth', 'move', 'movement', 'movie', 'much', 'multiple', 'murder',
+    'muscle', 'museum', 'music', 'musical', 'must', 'mutual', 'mystery',
+    'myth', 'naked', 'name', 'narrative', 'narrow', 'nation', 'national',
+    'native', 'natural', 'nature', 'near', 'nearby', 'nearly', 'neat',
+    'necessary', 'neck', 'need', 'negative', 'negotiate', 'neighbor',
+    'neither', 'nerve', 'network', 'neutral', 'never', 'nevertheless',
+    'next', 'nice', 'night', 'nine', 'noble', 'nobody', 'nod', 'noise',
+    'nominate', 'none', 'nonetheless', 'nor', 'normal', 'north', 'northern',
+    'nose', 'not', 'note', 'nothing', 'notice', 'notion', 'novel', 'now',
+    'nowhere', 'nuclear', 'number', 'numerous', 'nurse', 'object', 'objective',
+    'obligation', 'observe', 'obtain', 'obvious', 'occasion', 'occupy',
+    'occur', 'ocean', 'odd', 'offend', 'offense', 'offer', 'office', 'officer',
+    'official', 'often', 'oil', 'old', 'once', 'one', 'ongoing', 'online',
+    'only', 'open', 'operate', 'operation', 'opinion', 'opponent', 'option',
+    'orange', 'orbit', 'order', 'organ', 'organic', 'organization', 'orient',
+    'origin', 'original', 'other', 'otherwise', 'outcome', 'output', 'outside',
+    'overall', 'overcome', 'overlook', 'owe', 'own', 'owner', 'pace', 'pack',
+    'package', 'page', 'pain', 'paint', 'pair', 'palace', 'palm', 'pan',
+    'panel', 'panic', 'paper', 'parent', 'park', 'part', 'participant',
+    'particle', 'particular', 'partner', 'pass', 'passage', 'passenger',
+    'passion', 'past', 'path', 'patient', 'pattern', 'pause', 'pay', 'peace',
+    'peak', 'peer', 'penalty', 'people', 'perfect', 'perform', 'performance',
+    'perhaps', 'period', 'permanent', 'permission', 'permit', 'person',
+    'personal', 'personality', 'perspective', 'pet', 'phase', 'phenomenon',
+    'philosophy', 'phone', 'photo', 'phrase', 'physical', 'physician',
+    'piano', 'picture', 'piece', 'pilot', 'pioneer', 'pipe', 'pitch',
+    'place', 'plain', 'plan', 'plane', 'planet', 'plant', 'plastic', 'plate',
+    'platform', 'play', 'player', 'pleasure', 'plenty', 'plot', 'plug',
+    'plus', 'pocket', 'poetry', 'point', 'poison', 'police', 'policy',
+    'polish', 'polite', 'political', 'politician', 'politics', 'pollution',
+    'pool', 'poor', 'pop', 'popular', 'population', 'port', 'portion',
+    'portrait', 'pose', 'position', 'positive', 'possess', 'possibility',
+    'possible', 'possibly', 'post', 'pot', 'potato', 'potential', 'pound',
+    'pour', 'poverty', 'powder', 'power', 'powerful', 'practice', 'praise',
+    'pray', 'prayer', 'precise', 'predict', 'prefer', 'premise', 'premium',
+    'prepare', 'prescription', 'presence', 'present', 'preserve', 'president',
+    'press', 'pressure', 'pretend', 'prevent', 'previous', 'price', 'pride',
+    'priest', 'primary', 'prime', 'principal', 'principle', 'print', 'prior',
+    'priority', 'prison', 'privacy', 'private', 'privilege', 'prize',
+    'probably', 'problem', 'procedure', 'proceed', 'process', 'produce',
+    'product', 'profession', 'professional', 'professor', 'profile', 'profit',
+    'program', 'progress', 'project', 'promise', 'promote', 'prompt', 'proof',
+    'proper', 'property', 'proportion', 'proposal', 'propose', 'prospect',
+    'protect', 'protection', 'protein', 'protest', 'proud', 'prove',
+    'provide', 'psychology', 'public', 'publication', 'publish', 'pull',
+    'punch', 'punish', 'purchase', 'pure', 'purpose', 'pursue', 'push',
+    'put', 'qualify', 'quality', 'quarter', 'queen', 'question', 'quick',
+    'quiet', 'quit', 'quite', 'quote', 'race', 'radical', 'radio', 'rail',
+    'rain', 'raise', 'range', 'rank', 'rapid', 'rare', 'rate', 'rather',
+    'ratio', 'raw', 'reach', 'react', 'read', 'reader', 'reading', 'ready',
+    'real', 'reality', 'realize', 'really', 'reason', 'reasonable', 'recall',
+    'receive', 'recent', 'recipe', 'reckon', 'recognition', 'recognize',
+    'recommend', 'record', 'recover', 'red', 'reduce', 'reflect', 'reform',
+    'refugee', 'refuse', 'regard', 'regime', 'region', 'register', 'regret',
+    'regular', 'reject', 'relate', 'relation', 'relative', 'release',
+    'relevant', 'relief', 'religion', 'rely', 'remain', 'remark', 'remedy',
+    'remember', 'remind', 'remote', 'remove', 'render', 'rent', 'repair',
+    'repeat', 'replace', 'report', 'represent', 'reproduce', 'republic',
+    'reputation', 'request', 'require', 'research', 'reserve', 'reside',
+    'resign', 'resist', 'resolution', 'resolve', 'resource', 'respond',
+    'response', 'responsibility', 'responsible', 'rest', 'restore', 'restrict',
+    'result', 'retain', 'retire', 'retreat', 'return', 'reveal', 'revenue',
+    'reverse', 'review', 'revolution', 'reward', 'rhythm', 'rich', 'rid',
+    'ride', 'rifle', 'right', 'ring', 'riot', 'rise', 'risk', 'ritual',
+    'rival', 'river', 'road', 'rock', 'role', 'roll', 'romantic', 'roof',
+    'room', 'root', 'rope', 'rough', 'round', 'route', 'routine', 'row',
+    'royal', 'rub', 'rubber', 'ruin', 'rule', 'run', 'running', 'rural',
+    'rush', 'sacred', 'sad', 'safe', 'safety', 'sail', 'sake', 'salad',
+    'salary', 'sale', 'salt', 'same', 'sample', 'sand', 'satellite',
+    'satisfy', 'save', 'scale', 'scene', 'schedule', 'scheme', 'scholar',
+    'school', 'science', 'scientific', 'scientist', 'scope', 'score',
+    'scream', 'screen', 'script', 'sea', 'search', 'season', 'seat',
+    'second', 'secret', 'secretary', 'section', 'sector', 'secure',
+    'security', 'seed', 'seek', 'segment', 'select', 'self', 'sell',
+    'senate', 'senator', 'send', 'senior', 'sense', 'sensitive', 'sentence',
+    'separate', 'sequence', 'series', 'serious', 'serve', 'service',
+    'session', 'set', 'setting', 'settle', 'seven', 'several', 'severe',
+    'shade', 'shadow', 'shake', 'shall', 'shape', 'share', 'sharp', 'shed',
+    'sheet', 'shelf', 'shell', 'shelter', 'shift', 'shine', 'ship', 'shirt',
+    'shock', 'shoe', 'shoot', 'shop', 'shopping', 'shore', 'short',
+    'shot', 'should', 'shoulder', 'shout', 'show', 'shower', 'shrug',
+    'shut', 'sick', 'side', 'sight', 'sign', 'signal', 'signature',
+    'significant', 'silence', 'silent', 'silk', 'silly', 'silver', 'similar',
+    'simple', 'simply', 'simulate', 'since', 'sing', 'singer', 'single',
+    'sink', 'sir', 'sister', 'sit', 'site', 'situation', 'six', 'size',
+    'sketch', 'skill', 'skin', 'skirt', 'sky', 'slave', 'sleep', 'slice',
+    'slide', 'slight', 'slip', 'slope', 'slow', 'small', 'smart', 'smell',
+    'smile', 'smoke', 'smooth', 'snap', 'snow', 'soak', 'social', 'society',
+    'soft', 'software', 'soil', 'solar', 'soldier', 'solid', 'solution',
+    'solve', 'some', 'somebody', 'somehow', 'someone', 'something',
+    'sometimes', 'somewhat', 'son', 'song', 'soon', 'sophisticated',
+    'sorry', 'sort', 'soul', 'sound', 'source', 'south', 'southern',
+    'space', 'spare', 'speak', 'speaker', 'special', 'species', 'specific',
+    'speech', 'speed', 'spell', 'spend', 'sphere', 'spill', 'spin', 'spirit',
+    'spiritual', 'split', 'sponsor', 'sport', 'spot', 'spread', 'spring',
+    'square', 'stable', 'staff', 'stage', 'stair', 'stake', 'stand',
+    'standard', 'star', 'stare', 'start', 'state', 'statement', 'station',
+    'statue', 'status', 'stay', 'steady', 'steal', 'steel', 'step', 'stick',
+    'still', 'stimulus', 'stock', 'stomach', 'stone', 'stop', 'storage',
+    'store', 'storm', 'story', 'straight', 'strange', 'stranger', 'strategy',
+    'stream', 'street', 'strength', 'stress', 'stretch', 'strict', 'strike',
+    'string', 'strip', 'stroke', 'strong', 'structure', 'struggle',
+    'student', 'studio', 'study', 'stuff', 'style', 'subject', 'submit',
+    'subsequent', 'substance', 'substantial', 'substitute', 'subtle',
+    'succeed', 'success', 'successful', 'such', 'sudden', 'suffer',
+    'sufficient', 'sugar', 'suggest', 'suit', 'sum', 'summer', 'summit',
+    'sun', 'super', 'superior', 'supply', 'support', 'suppose', 'supreme',
+    'sure', 'surface', 'surgery', 'surprise', 'surround', 'survey',
+    'survive', 'suspect', 'suspend', 'sustain', 'swallow', 'swap', 'swear',
+    'sweep', 'sweet', 'swim', 'swing', 'switch', 'symbol', 'sympathy',
+    'symptom', 'system', 'table', 'tablet', 'tackle', 'tail', 'take',
+    'tale', 'talent', 'talk', 'tank', 'tape', 'target', 'task', 'taste',
+    'tax', 'teach', 'teacher', 'teaching', 'team', 'tear', 'technical',
+    'technique', 'technology', 'teen', 'telephone', 'telescope', 'television',
+    'tell', 'temperature', 'temple', 'temporary', 'ten', 'tend', 'tendency',
+    'tennis', 'tension', 'tent', 'term', 'terminal', 'terrible', 'territory',
+    'terror', 'test', 'testify', 'text', 'than', 'thank', 'thanks', 'that',
+    'theater', 'theme', 'then', 'theology', 'theory', 'therapist', 'therapy',
+    'there', 'therefore', 'thesis', 'thick', 'thin', 'thing', 'think',
+    'third', 'thirty', 'this', 'thorough', 'though', 'thought', 'thousand',
+    'threat', 'threaten', 'three', 'throat', 'through', 'throughout',
+    'throw', 'thumb', 'thus', 'ticket', 'tide', 'tight', 'till', 'time',
+    'tiny', 'tip', 'tire', 'title', 'today', 'together', 'tone', 'tongue',
+    'tonight', 'tool', 'tooth', 'top', 'topic', 'total', 'touch', 'tough',
+    'tour', 'tourist', 'toward', 'tower', 'town', 'track', 'trade',
+    'tradition', 'traffic', 'tragedy', 'trail', 'train', 'transfer',
+    'transform', 'transition', 'translate', 'transport', 'trap', 'trash',
+    'travel', 'treasure', 'treat', 'treatment', 'treaty', 'tree', 'tremendous',
+    'trend', 'trial', 'tribe', 'trick', 'trigger', 'trip', 'triumph',
+    'troop', 'tropical', 'trouble', 'truck', 'true', 'truly', 'trust',
+    'truth', 'try', 'tube', 'tune', 'tunnel', 'turn', 'twelve', 'twenty',
+    'twice', 'twin', 'twist', 'two', 'type', 'typical', 'ugly', 'ultimate',
+    'uncle', 'uncover', 'under', 'undergo', 'understand', 'undertake',
+    'uneven', 'unfair', 'unfold', 'unfortunate', 'uniform', 'union', 'unique',
+    'unit', 'unite', 'unity', 'universal', 'universe', 'university',
+    'unknown', 'unless', 'unlike', 'unlikely', 'unusual', 'update', 'upon',
+    'upper', 'upset', 'urban', 'urge', 'use', 'used', 'useful', 'user',
+    'usual', 'utility', 'vacation', 'valid', 'valley', 'value', 'van',
+    'variable', 'variation', 'variety', 'various', 'vary', 'vast',
+    'vegetable', 'vehicle', 'venture', 'version', 'versus', 'vertical',
+    'vessel', 'veteran', 'via', 'victim', 'victory', 'video', 'view',
+    'village', 'violate', 'violence', 'virtue', 'virus', 'visible',
+    'vision', 'visit', 'visitor', 'visual', 'vital', 'voice', 'volume',
+    'volunteer', 'vote', 'wage', 'wait', 'wake', 'walk', 'wall', 'wander',
+    'want', 'war', 'warm', 'warn', 'wash', 'waste', 'watch', 'water', 'wave',
+    'way', 'weak', 'wealth', 'weapon', 'wear', 'weather', 'web', 'wedding',
+    'week', 'weekend', 'weekly', 'weight', 'welcome', 'welfare', 'well',
+    'west', 'western', 'wet', 'whale', 'wheel', 'when', 'where', 'whether',
+    'which', 'while', 'whisper', 'white', 'whole', 'why', 'wide', 'widespread',
+    'wife', 'wild', 'will', 'win', 'wind', 'window', 'wine', 'wing', 'winner',
+    'winter', 'wire', 'wise', 'wish', 'witness', 'woman', 'wonder', 'wood',
+    'wooden', 'word', 'work', 'worker', 'working', 'workshop', 'world',
+    'worry', 'worth', 'would', 'wound', 'wrap', 'write', 'writer', 'writing',
+    'wrong', 'yard', 'year', 'yellow', 'yes', 'yesterday', 'yet', 'yield',
+    'young', 'youth', 'zone',
+    // Polski (formy znormalizowane — bez polskich znaków)
+    'bardzo', 'dobrze', 'moze', 'przed', 'przez', 'podczas', 'miedzy',
+    'okolo', 'wedlug', 'czesto', 'zawsze', 'nigdy', 'prawie', 'wlasnie',
+    'raczej', 'rzeczywiscie', 'oczywiscie', 'zwlaszcza', 'szczegolnie',
+    'glownie', 'niemal', 'praktycznie', 'wlasciwie', 'zatem', 'dlatego',
+    'przeciez', 'natomiast', 'tymczasem', 'ponadto', 'wreszcie', 'wkrotce',
+    'obecnie', 'aktualnie', 'niezwykle', 'troszke', 'dosc', 'dosyc',
+    'calkowicie', 'zupelnie', 'absolutnie', 'wylacznie', 'jedynie',
+    'czlowiek', 'rodzina', 'miejsca', 'miejsce', 'godzina', 'chwila',
+    'droga', 'sprawa', 'przyklad', 'przykladow', 'sposob',
+    'wybor', 'mozliwosc', 'powod', 'wynik', 'praca', 'szkola', 'pracownik',
+    'nauczyciel', 'uczen', 'lekcja', 'komputer',
+    'aplikacja', 'plik', 'konto', 'haslo', 'nazwa', 'adres',
+    'telefon', 'ksiazka', 'zdjecie', 'muzyka', 'piosenka',
+    'pokoj', 'kuchnia', 'lazienka', 'okno', 'drzwi', 'sciana', 'podloga',
+    'samochod', 'ulica', 'miasto', 'kraj', 'swiat', 'rzeka', 'las',
+    'gora', 'reka', 'noga', 'glowa', 'oko', 'ucho', 'serce', 'pluco',
+    'watroba', 'mozg', 'lekarz', 'szpital', 'choroba', 'leczenie',
+    'zdrowie', 'operacja', 'recepta', 'prosze', 'dziekuje', 'przepraszam',
+    'milosc', 'przyjazn', 'nadzieja', 'wiara', 'marzenie', 'szczescie',
+    'sztuka', 'nauka', 'historia', 'matematyka', 'fizyka', 'chemia',
+    'biologia', 'ogolny', 'rola', 'wiek', 'cel', 'wartosc', 'czlonek',
+    'dzialanie', 'przypadek', 'stan', 'poziom', 'sila', 'zgodny',
+    'wymaganie', 'wielkosc', 'ilosc', 'jakosc', 'stopien', 'temperatura',
+    'gestosc', 'wysokosc', 'szerokosc', 'glebokosc', 'dlugosc',
+    'odleglosc', 'predkosc', 'szybkosc', 'czestotliwosc', 'czestosc',
+    'waga', 'masa', 'objetosc', 'powierzchnia', 'obszar', 'zakres',
+    'przestrzen', 'kierunek', 'strona', 'krawedz', 'granica', 'brzeg',
+    'kolumna', 'wiersz', 'tabela', 'rysunek', 'wykres', 'znaczenie',
+    'wyraz', 'zdanie', 'tekst', 'tresc', 'zawartosc', 'wersja',
+    'wersje', 'spelnienie', 'zapewnienie', 'dzial', 'sektor', 'branza',
+    'branzy', 'branze', 'branz', 'specjalnosc', 'specjalista',
+    'specjalizacja', 'ochrona', 'bezpieczenstwo', 'ustawienie',
+    'konfiguracja', 'parametr', 'opcja', 'narzedzie',
+    'skladnik', 'czesci', 'czesc', 'dodatek', 'pomoc',
+    'wsparcie', 'pomocny', 'przydatny', 'wygodny', 'latwy', 'latwo',
+    'prosty', 'prosta', 'proste', 'trudny', 'trudna', 'trudne',
+    'ciekawy', 'ciekawa', 'ciekawe', 'wazny', 'wazna', 'wazne',
+    'konieczny', 'konieczna', 'konieczne', 'mozliwy', 'mozliwa', 'mozliwe',
+    'lepszy', 'lepsza', 'lepsze', 'najlepszy', 'najlepsza', 'najlepsze',
+    'gorszy', 'gorsza', 'gorsze', 'najgorszy', 'wiekszy', 'wieksza',
+    'wieksze', 'najwiekszy', 'mniejszy', 'mniejsza', 'mniejsze',
+    'najmniejszy', 'dluzszy', 'dluzsza', 'dluzsze', 'krotszy', 'krotsza',
+    'krotsze', 'szerszy', 'szersza', 'szersze', 'wezszy', 'wezsza',
+    'wezsze', 'wyzszy', 'wyzsza', 'wyzsze', 'nizszy', 'nizsza', 'nizsze',
+    'madry', 'madra', 'madre', 'glupi', 'glupia', 'glupie',
+    'silny', 'silna', 'silne', 'slaby', 'slaba', 'slabe',
+    'mocny', 'mocna', 'mocne', 'dlugi', 'dluga', 'dlugie',
+    'szybki', 'szybka', 'szybkie', 'wolny', 'wolna', 'wolne',
+    'cieply', 'ciepla', 'cieple', 'zimny', 'zimna', 'zimne',
+    'goracy', 'goraca', 'gorace', 'suchy', 'sucha', 'suche',
+    'mokry', 'mokra', 'mokre', 'jasny', 'jasna', 'jasne',
+    'ciemny', 'ciemna', 'ciemne', 'bialy', 'biala', 'biale',
+    'czarny', 'czarna', 'czarne', 'czerwony', 'czerwona', 'czerwone',
+    'zielony', 'zielona', 'zielone', 'niebieski', 'niebieska', 'niebieskie',
+    'zolty', 'zolta', 'zolte', 'szary', 'szara', 'szare',
+    'rozowy', 'rozowa', 'rozowe', 'fioletowy', 'fioletowa', 'fioletowe',
+    'pomaranczowy', 'pomaranczowa', 'pomaranczowe',
+    'przezroczysty', 'przezroczysta', 'przezroczyste',
+    'wspolny', 'wspolna', 'wspolne', 'prywatny', 'prywatna', 'prywatne',
+    'publiczny', 'publiczna', 'publiczne', 'otwarty', 'otwarta', 'otwarte',
+    'zamkniety', 'zamknieta', 'zamkniete', 'gotowy', 'gotowa', 'gotowe',
+    'pewny', 'pewna', 'pewne', 'pelny', 'pelna', 'pelne',
+    'znany', 'znana', 'znane',
+    'nieznany', 'nieznana', 'nieznane', 'osobny', 'osobna', 'osobne',
+    'rozny', 'rozna', 'rozne', 'podobny', 'podobna', 'podobne',
+    'inny', 'inna', 'inne', 'tylko', 'rowniez', 'rownie',
+    'takze', 'ponownie', 'bezposrednio', 'posrednio',
+    'oddzielnie', 'lacznie', 'osobno', 'ogolnie', 'koncowo',
+    'poczatkowo', 'pierwotnie', 'oryginalnie', 'dokladnie', 'precyzyjnie',
+    'wyraznie', 'czytelnie', 'ladnie', 'brzydko', 'elegancko',
+    'szybciej', 'wolniej', 'lepiej', 'gorzej', 'wiecej', 'mniej',
+    'czesciej', 'rzadziej', 'latwiej', 'trudniej', 'taniej', 'drozej',
+    'wczesniej', 'pozniej', 'predzej', 'bardziej', 'mocniej',
+    'slabiej', 'jasniej', 'ciemniej', 'cieplej', 'zimniej',
+  };
+
   /// Normalizuje tekst: leet speak, diakrytyki, separatory
   String _normalize(String s) {
     s = s.toLowerCase();
@@ -1738,25 +2213,169 @@ class BrowserService extends ChangeNotifier {
         .toList();
   }
 
-  bool _fuzzyMatchesUrl(
+  // Cache znormalizowanych słów (unika wielokrotnego _normalize)
+  final Map<String, String> _normalizedCache = {};
+
+  String _cachedNormalize(String s) =>
+      _normalizedCache.putIfAbsent(s, () => _normalize(s));
+
+  /// Sprawdza [keyword] przeciwko liście już wyekstrahowanych tokenów URL.
+  /// Zwraca dopasowany token lub null.
+  String? _fuzzyMatchesTokens(
     String keyword,
-    String normalizedUrl, {
+    List<String> tokens, {
     int? overrideThreshold,
   }) {
-    final normKeyword = _normalize(keyword);
-    if (normKeyword.length < 3) return false;
+    final normKeyword = _cachedNormalize(keyword);
+    if (normKeyword.length < 3) return null;
     final threshold = overrideThreshold ?? _threshold(normKeyword.length);
-    final tokens = _urlTokens(normalizedUrl);
     for (final token in tokens) {
-      if (token == normKeyword) return true;
+      if (token == normKeyword) return token;
+      if (_tokenIsCompound(token, normKeyword, threshold)) continue;
       if (threshold > 0 &&
           (token.length - normKeyword.length).abs() <= threshold) {
-        if (_levenshtein(token, normKeyword) <= threshold) return true;
+        final dist = _levenshtein(token, normKeyword);
+        if (dist <= threshold &&
+            dist /
+                    (token.length > normKeyword.length
+                        ? token.length
+                        : normKeyword.length) >=
+                0.15) {
+          if (_commonWords.contains(token)) continue;
+          if (_wordExistsInDicts(token)) continue;
+          return token;
+        }
       }
       if (threshold > 0 &&
           normKeyword.length >= 5 &&
           token.contains(normKeyword))
+        return token;
+    }
+    return null;
+  }
+
+  bool _wordExistsInDicts(String word) {
+    if (!dictionaryService.isLoaded) return false;
+    if (_checkWordInAllDicts(word)) return true;
+    // Sprawdź warianty z polskimi znakami diakrytyzowanymi
+    for (final variant in _polishDiacriticVariants(word)) {
+      if (_checkWordInAllDicts(variant)) return true;
+      // Sprawdź rdzeń po odcięciu polskich końcówek fleksyjnych
+      for (final stem in _polishStems(variant)) {
+        if (_checkStemInAllDicts(stem)) return true;
+      }
+    }
+    return false;
+  }
+
+  bool _checkWordInAllDicts(String word) {
+    for (final locale in dictionaryService.supportedLocales) {
+      if (dictionaryService.wordExists(locale, word)) return true;
+    }
+    return false;
+  }
+
+  bool _checkStemInAllDicts(String stem) {
+    if (stem.length < 3) return false;
+    for (final locale in dictionaryService.supportedLocales) {
+      if (dictionaryService.wordStartsWith(locale, stem)) return true;
+    }
+    return false;
+  }
+
+  /// Generuje wszystkie kombinacje zastąpienia liter ASCII ich polskimi
+  /// odpowiednikami z diakrytyzami (np. "hasla" → "hasła").
+  static List<String> _polishDiacriticVariants(String word) {
+    if (word.length > 12) return [];
+    const map = <String, List<String>>{
+      'a': ['ą'],
+      'c': ['ć'],
+      'e': ['ę'],
+      'l': ['ł'],
+      'n': ['ń'],
+      'o': ['ó'],
+      's': ['ś'],
+      'z': ['ź', 'ż'],
+    };
+    final chars = word.split('');
+    // Znajdź pozycje które można zastąpić
+    final positions = <int>[];
+    final options = <List<String>>[];
+    for (int i = 0; i < chars.length; i++) {
+      final opts = map[chars[i]];
+      if (opts != null) {
+        positions.add(i);
+        options.add(opts);
+      }
+    }
+    if (positions.isEmpty) return [];
+    // Nie generuj więcej niż 64 kombinacji
+    int total = 1;
+    for (final opts in options) {
+      total *= (1 + opts.length);
+    }
+    if (total > 64) return [];
+    // Generuj wszystkie kombinacje (pomijając maskę 0 = brak zmian)
+    final results = <String>[];
+    final n = positions.length;
+    final counts = options.map((o) => 1 + o.length).toList();
+    for (int mask = 1; mask < total; mask++) {
+      final replaced = [...chars];
+      int m = mask;
+      for (int j = 0; j < n; j++) {
+        final mod = m % counts[j];
+        m ~/= counts[j];
+        if (mod > 0) {
+          replaced[positions[j]] = options[j][mod - 1];
+        }
+      }
+      results.add(replaced.join());
+    }
+    return results;
+  }
+
+  /// Odcięcie typowych polskich końcówek fleksyjnych od słowa.
+  static List<String> _polishStems(String word) {
+    if (word.length < 4) return [];
+    final stems = <String>[];
+    final endings = [
+      'ami',
+      'ach',
+      'ami',
+      'ach',
+      'oma',
+      'owi',
+      'a',
+      'y',
+      'i',
+      'e',
+      'ę',
+      'ą',
+      'ów',
+      'om',
+      'ą',
+      'ę',
+      'u',
+    ];
+    for (final ending in endings) {
+      if (word.endsWith(ending) && word.length > ending.length + 2) {
+        stems.add(word.substring(0, word.length - ending.length));
+      }
+    }
+    return stems;
+  }
+
+  /// Próbuje rozłożyć [token] na dwa znane słowa z [CommonWords].
+  /// Jeśli się uda i żadne z nich nie pasuje dokładnie do blokowanego słowa → true (pomiń).
+  bool _tokenIsCompound(String token, String normKeyword, int threshold) {
+    if (token.length < 6) return false;
+    for (int i = 3; i <= token.length - 3; i++) {
+      final prefix = token.substring(0, i);
+      final suffix = token.substring(i);
+      if (_commonWords.contains(prefix) && _commonWords.contains(suffix)) {
+        if (prefix == normKeyword || suffix == normKeyword) return false;
         return true;
+      }
     }
     return false;
   }
@@ -1828,7 +2447,7 @@ class BrowserService extends ChangeNotifier {
   }
 
   /// Jak getBlockReason, ale dodatkowo zwraca dopasowany ciąg (słowo kluczowe / domenę).
-  (BlockReason, String?) getBlockReasonWithMatch(String urlString) {
+  (BlockReason, BlockMatch?) getBlockReasonWithMatch(String urlString) {
     if (urlString.isEmpty) return (BlockReason.none, null);
 
     final lowerUrl = urlString.toLowerCase().trim();
@@ -1845,10 +2464,11 @@ class BrowserService extends ChangeNotifier {
 
     // 1. Proxy / VPN
     if (uri != null && remoteBlockedProxy.contains(uri.host)) {
-      return (BlockReason.proxy, uri.host);
+      return (BlockReason.proxy, BlockMatch(uri.host, uri.host));
     }
     for (final domain in remoteBlockedProxy) {
-      if (lowerUrl.contains(domain)) return (BlockReason.proxy, domain);
+      if (lowerUrl.contains(domain))
+        return (BlockReason.proxy, BlockMatch(domain, domain));
     }
     const proxyKeywords = [
       "proxy",
@@ -1880,36 +2500,17 @@ class BrowserService extends ChangeNotifier {
       "astrill",
     ];
     for (final word in proxyKeywords) {
-      if (lowerUrl.contains(word)) return (BlockReason.proxy, word);
+      if (lowerUrl.contains(word))
+        return (BlockReason.proxy, BlockMatch(word, word));
     }
 
     // 2. Filtr treści dla dorosłych
     if (adultFilterEnabled) {
       if (remoteBlockedDomains.contains(host)) {
-        return (BlockReason.content, host);
+        return (BlockReason.content, BlockMatch(host, host));
       }
-      if (_matchesPornKeywordsExpanded(normalizedUrl)) {
-        // Znajdź które słowo pasuje (do wyświetlenia w UI)
-        // Zamiast obecnego bloku "matched", użyj tej samej logiki co _matchesPornKeywordsExpanded
-        String matched = 'treści dla dorosłych';
-
-        // Szukaj w pornKeywords + ich tłumaczeniach (tak samo jak _matchesPornKeywordsExpanded)
-        outer:
-        for (final baseWord in pornKeywords) {
-          if (_fuzzyMatchesUrl(baseWord, normalizedUrl)) {
-            matched = baseWord;
-            break;
-          }
-          final trans = _wordTranslations[baseWord];
-          if (trans != null) {
-            for (final t in trans) {
-              if (_fuzzyMatchesUrl(t, normalizedUrl)) {
-                matched = '$baseWord ($t)';
-                break outer;
-              }
-            }
-          }
-        }
+      final matched = _matchedPornKeyword(normalizedUrl);
+      if (matched != null) {
         return (BlockReason.content, matched);
       }
     }
@@ -1921,42 +2522,63 @@ class BrowserService extends ChangeNotifier {
     }
 
     if (isBlockedByTimeRule(normalizedUrl)) {
-      return (BlockReason.timeLimit, _findTimeRuleDomain(host) ?? host);
+      final domain = _findTimeRuleDomain(host) ?? host;
+      return (BlockReason.timeLimit, BlockMatch(domain, domain));
     }
 
     return (BlockReason.none, null);
   }
 
-  bool handleNavigation(
+  Future<String?> _identifyLanguage(String text) async {
+    try {
+      _languageIdentifier ??= LanguageIdentifier(confidenceThreshold: 0.5);
+      return await _languageIdentifier!.identifyLanguage(text);
+    } catch (e) {
+      print("⚠️ Language ID error: $e");
+      return null;
+    }
+  }
+
+  Future<bool> handleNavigation(
     String urlString,
     InAppWebViewController controller,
-    void Function(WebUri, InAppWebViewController?, BlockReason, String?)
+    void Function(WebUri, InAppWebViewController?, BlockReason, BlockMatch?)
     onPasswordRequired,
     void Function(String) onBlocked,
-  ) {
+  ) async {
     print("🔍 handleNavigation: $urlString");
 
     // Najpierw sprawdź słowa kluczowe — nawet w zapytaniach Google
-    final (reason, matchedWord) = getBlockReasonWithMatch(urlString);
-    print("🔍 reason: $reason, matched: $matchedWord");
+    final (reason, match) = getBlockReasonWithMatch(urlString);
+    print("🔍 reason: $reason, match: ${match?.displayWord}");
 
     if (reason == BlockReason.proxy) {
-      final msg = matchedWord != null
-          ? "Ta strona jest zablokowana — proxy i VPN są niedozwolone. [\"$matchedWord\"]"
+      final msg = match != null
+          ? "Ta strona jest zablokowana — proxy i VPN są niedozwolone. [\"${match.word}\"]"
           : "Ta strona jest zablokowana — proxy i VPN są niedozwolone.";
       onBlocked(msg);
       return true;
     }
 
     if (reason == BlockReason.content || reason == BlockReason.blacklist) {
+      // Dla fuzzy match (Levenshtein), sprawdź język tokenu
+      if (match != null &&
+          match.isFuzzyMatch &&
+          match.detectedLanguage == null) {
+        final lang = await _identifyLanguage(match.token);
+        if (lang != null && lang != 'und') {
+          match.detectedLanguage = lang;
+        }
+      }
+
       if (savedPassword != null) {
         if (canSkipAuth(urlString)) {
           return false; // już autoryzowana, przepuść
         }
-        onPasswordRequired(WebUri(urlString), controller, reason, matchedWord);
+        onPasswordRequired(WebUri(urlString), controller, reason, match);
       } else {
-        final msg = matchedWord != null
-            ? "Ta strona jest zablokowana. [\"$matchedWord\"]"
+        final msg = match != null
+            ? "Ta strona jest zablokowana. [\"${match.displayWord}\"]"
             : "Ta strona jest zablokowana.";
         onBlocked(msg);
       }
@@ -1965,7 +2587,7 @@ class BrowserService extends ChangeNotifier {
 
     // SafeSearch — tylko gdy URL jest czysty (brak słów kluczowych)
     if (reason == BlockReason.timeLimit) {
-      onPasswordRequired(WebUri(urlString), controller, reason, matchedWord);
+      onPasswordRequired(WebUri(urlString), controller, reason, match);
       return true;
     }
 
@@ -2013,6 +2635,15 @@ class BrowserService extends ChangeNotifier {
   /// Zwraca zmodyfikowany URL z wymuszonym SafeSearch, lub null jeśli nic nie trzeba zmieniać.
   String? _applySafeSearch(String urlString) {
     final lower = urlString.toLowerCase();
+
+    // W incognito: dodaj pws=0 do Google search, aby wyłączyć personalizację
+    if (incognitoMode &&
+        lower.contains('google.') &&
+        lower.contains('/search') &&
+        !lower.contains('pws=0')) {
+      final sep = urlString.contains('?') ? '&' : '?';
+      urlString = '$urlString${sep}pws=0';
+    }
 
     // Pary: [fragment hosta, parametr do sprawdzenia, parametr do dodania]
     const rules = [
@@ -2317,14 +2948,16 @@ class BrowserService extends ChangeNotifier {
 
   // ── Karty ────────────────────────────────────
   void addNewTab() {
-    tabs.add(TabModel(url: homePageUrl, loaded: true));
+    tabs.add(
+      TabModel(url: homePageUrl, loaded: true, isIncognito: incognitoMode),
+    );
     currentTabIndex = tabs.length - 1;
     saveTabs();
     notifyListeners();
   }
 
   void addTabWithUrl(String url) {
-    tabs.add(TabModel(url: url, loaded: true));
+    tabs.add(TabModel(url: url, loaded: true, isIncognito: incognitoMode));
     currentTabIndex = tabs.length - 1;
     saveTabs();
     notifyListeners();
@@ -2479,36 +3112,74 @@ class BrowserService extends ChangeNotifier {
   }
 
   // ── Historia ─────────────────────────────────
-  Future<void> addToHistory(String? title, String url) async {
+  Future<void> addToHistory(
+    String? title,
+    String url, {
+    bool isIncognito = false,
+  }) async {
     if (url.isEmpty ||
         url.contains("about:blank") ||
         url.contains("safe=active") ||
         url == "https://www.google.com/" ||
         url.startsWith("https://www.google.com/#") ||
-        incognitoMode) {
+        isIncognito) {
       return;
     }
 
     String displayTitle = title ?? url;
 
-    // Próba wyciągnięcia frazy z URL
+    // Próba wyciągnięcia frazy z URL (obsługa różnych wyszukiwarek)
     final uri = Uri.tryParse(url);
-    if (uri != null &&
-        uri.host.contains("google.") &&
-        uri.queryParameters.containsKey("q")) {
-      displayTitle = "🔍 ${uri.queryParameters['q']}";
+    if (uri != null) {
+      final host = uri.host;
+      String? query;
+      if (host.contains("google.")) {
+        query = uri.queryParameters['q'];
+      } else if (host.contains("duckduckgo.com")) {
+        query = uri.queryParameters['q'];
+      } else if (host.contains("bing.com")) {
+        query = uri.queryParameters['q'];
+      } else if (host.contains("search.brave.com") ||
+          host.contains("brave.com")) {
+        query = uri.queryParameters['q'];
+      } else if (host.contains("ecosia.org")) {
+        query = uri.queryParameters['q'];
+      } else if (host.contains("search.yahoo.com") ||
+          host.contains("yahoo.com")) {
+        query = uri.queryParameters['p'];
+      } else if (host.contains("startpage.com")) {
+        query = uri.queryParameters['q'];
+      }
+      if (query != null && query.isNotEmpty) {
+        displayTitle = "🔍 $query";
+      }
     }
-    // Próba wyciągnięcia frazy z tytułu strony (np. "fraza - Google Search")
-    else if (title != null &&
-        (title.contains(" - Google Search") ||
-            title.contains(" - Szukaj w Google") ||
-            title.contains(" - Google"))) {
-      final phrase = title
-          .replaceAll(" - Google Search", "")
-          .replaceAll(" - Szukaj w Google", "")
-          .replaceAll(" - Google", "")
-          .trim();
-      if (phrase.isNotEmpty) displayTitle = "🔍 $phrase";
+
+    // Fallback: wyciągnięcie frazy z tytułu strony
+    if (title != null) {
+      final engines = [
+        " - Google Search",
+        " - Szukaj w Google",
+        " - Google",
+        " - DuckDuckGo",
+        " - Bing",
+        " - Brave Search",
+        " - Brave",
+        " - Ecosia",
+        " - Search",
+        " - Yahoo Search",
+        " - Yahoo",
+        " - Startpage",
+      ];
+      for (final suffix in engines) {
+        if (title.contains(suffix)) {
+          final phrase = title.replaceAll(suffix, "").trim();
+          if (phrase.isNotEmpty) {
+            displayTitle = "🔍 $phrase";
+          }
+          break;
+        }
+      }
     }
 
     // Jeśli ostatni wpis ma ten sam tytuł — nie dodawaj duplikatu
@@ -2528,17 +3199,27 @@ class BrowserService extends ChangeNotifier {
   }
 
   Future<void> saveTabs() async {
+    if (incognitoMode) return;
     final prefs = await _getPrefs;
-    // Używaj tab.url który jest na bieżąco aktualizowany przez updateTabMetadata
-    // Nie odpytuj kontrolera asynchronicznie — może zwrócić stary URL
-    final tabsData = tabs.map((t) {
+    final normalTabs = tabs.where((t) => !t.isIncognito).toList();
+    if (normalTabs.isEmpty) {
+      await prefs.remove('saved_tabs');
+      await prefs.remove('saved_tab_index');
+      return;
+    }
+    final tabsData = normalTabs.map((t) {
       final url = t.url.isNotEmpty && !t.url.startsWith('about:') ? t.url : '';
       final title = _isUsableTabTitle(t.title) ? t.title : _titleFromUrl(url);
       return {'url': url, 'title': title};
     }).toList();
+    // Oblicz index względem normalnych kart
+    final normalIndex = tabs.indexOf(tabs[currentTabIndex]);
+    final savedIndex = normalTabs.indexWhere(
+      (t) => tabs.indexOf(t) == normalIndex,
+    );
     final encoded = json.encode(tabsData);
     await prefs.setString('saved_tabs', encoded);
-    await prefs.setInt('saved_tab_index', currentTabIndex);
+    await prefs.setInt('saved_tab_index', savedIndex >= 0 ? savedIndex : 0);
     debugPrint('💾 saveTabs: $encoded');
   }
 
@@ -2694,7 +3375,8 @@ class BrowserService extends ChangeNotifier {
     } else if (engine.contains('yahoo.com')) {
       return 'https://search.yahoo.com/search?p=$encoded${safe ? "&vm=r" : ""}';
     } else {
-      return 'https://www.google.com/search?q=$encoded${safe ? "&safe=active" : "&safe=off"}';
+      final pws = incognitoMode ? '&pws=0' : '';
+      return 'https://www.google.com/search?q=$encoded${safe ? "&safe=active" : "&safe=off"}$pws';
     }
   }
 }
