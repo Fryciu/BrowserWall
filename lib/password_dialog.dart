@@ -17,8 +17,7 @@ class _PasswordDialogState extends State<PasswordDialog> {
 
   bool _obscureNew = true;
   bool _obscureRepeat = true;
-  bool _biometricAvailable = false;
-  bool _biometricLoading = true;
+  late PasswordType _selectedType;
 
   List<int>? _firstPattern;
   bool _waitingSecond = false;
@@ -27,17 +26,7 @@ class _PasswordDialogState extends State<PasswordDialog> {
   @override
   void initState() {
     super.initState();
-    _checkBiometric();
-  }
-
-  Future<void> _checkBiometric() async {
-    final available = await widget.svc.isBiometricAvailable;
-    if (mounted) {
-      setState(() {
-        _biometricAvailable = available;
-        _biometricLoading = false;
-      });
-    }
+    _selectedType = widget.svc.passwordType;
   }
 
   @override
@@ -59,12 +48,6 @@ class _PasswordDialogState extends State<PasswordDialog> {
           _typeChip('Tekstowe', PasswordType.text, current, Icons.text_fields),
           const SizedBox(width: 6),
           _typeChip('Wzór', PasswordType.pattern, current, Icons.grid_3x3),
-          if (!_biometricLoading && _biometricAvailable) ...[
-            const SizedBox(width: 6),
-            _typeChip(
-              'Biometria', PasswordType.biometric, current, Icons.fingerprint,
-            ),
-          ],
         ],
       ),
     );
@@ -74,7 +57,7 @@ class _PasswordDialogState extends State<PasswordDialog> {
     final selected = type == current;
     return GestureDetector(
       onTap: () => setState(() {
-        widget.svc.passwordType = type;
+        _selectedType = type;
         _firstPattern = null;
         _waitingSecond = false;
         _patternError = '';
@@ -107,7 +90,7 @@ class _PasswordDialogState extends State<PasswordDialog> {
   }
 
   Future<void> _save() async {
-    final type = widget.svc.passwordType;
+    final type = _selectedType;
 
     if (type == PasswordType.text) {
       final newP = _newPController.text;
@@ -131,10 +114,6 @@ class _PasswordDialogState extends State<PasswordDialog> {
         return;
       }
       await widget.svc.savePattern(_firstPattern!);
-    } else if (type == PasswordType.biometric) {
-      final ok = await widget.svc.verifyWithBiometrics();
-      if (!ok) return;
-      await widget.svc.enableBiometric();
     }
 
     if (mounted) Navigator.pop(context);
@@ -143,7 +122,7 @@ class _PasswordDialogState extends State<PasswordDialog> {
   @override
   Widget build(BuildContext context) {
     final hasP = widget.svc.hasPassword;
-    final type = widget.svc.passwordType;
+    final type = _selectedType;
 
     return AlertDialog(
       backgroundColor: _bgColor,
@@ -237,26 +216,6 @@ class _PasswordDialogState extends State<PasswordDialog> {
                   }
                 }
               },
-            ),
-          ] else if (type == PasswordType.biometric) ...[
-            const Padding(
-              padding: EdgeInsets.only(bottom: 12),
-              child: Text(
-                'Użyj czujnika biometrycznego (odcisk palca / twarz)',
-                style: TextStyle(color: Colors.white70, fontSize: 13),
-              ),
-            ),
-            Center(
-              child: IconButton(
-                onPressed: () async {
-                  final ok = await widget.svc.verifyWithBiometrics();
-                  if (ok) {
-                    await widget.svc.enableBiometric();
-                    if (mounted) Navigator.pop(context);
-                  }
-                },
-                icon: const Icon(Icons.fingerprint, color: Colors.blue, size: 48),
-              ),
             ),
           ],
         ],

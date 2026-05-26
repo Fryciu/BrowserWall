@@ -155,172 +155,267 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
       return;
     }
 
+    if (svc.isPatternType) {
+      _showPatternDialog(svc, url, controller, reason, reasonIcon, reasonLabel, reasonColor, match);
+      return;
+    }
     String enteredPass = "";
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF202124),
-        title: const Text(
-          "Strona Chroniona",
-          style: TextStyle(color: Colors.white),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Baner z przyczyną blokady
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 16),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: reasonColor.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: reasonColor.withOpacity(0.4)),
-              ),
-              child: Row(
-                children: [
-                  Text(reasonIcon, style: const TextStyle(fontSize: 20)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "Powód blokady",
-                          style: TextStyle(
-                            color: reasonColor,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          reasonLabel,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        if (match != null) ...[
-                          const SizedBox(height: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 3,
-                            ),
-                            decoration: BoxDecoration(
-                              color: reasonColor.withOpacity(0.18),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              '"${match.displayWord}"',
-                              style: TextStyle(
-                                color: reasonColor,
-                                fontSize: 12,
-                                fontFamily: 'monospace',
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          if (match.token != match.displayWord) ...[
-                            const SizedBox(height: 2),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 3,
-                              ),
-                              decoration: BoxDecoration(
-                                color: reasonColor.withOpacity(0.12),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                'Token: ${match.token}',
-                                style: TextStyle(
-                                  color: reasonColor.withOpacity(0.8),
-                                  fontSize: 11,
-                                  fontFamily: 'monospace',
-                                ),
-                              ),
-                            ),
-                          ],
-                          if (match.detectedLanguage != null &&
-                              !svc.dictionaryService
-                                  .isSupportedLocale(match.detectedLanguage!)) ...[
-                            const SizedBox(height: 4),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.amber.withOpacity(0.15),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: Colors.amber.withOpacity(0.4),
-                                ),
-                              ),
-                              child: Text(
-                                'Słowo najprawdopodobniej pochodzi z języka "${match.detectedLanguage}", '
-                                'który nie jest obsługiwany. '
-                                'Jeśli uważasz, że słowo zostało błędnie zablokowane, '
-                                'pobierz obsługę języka ${match.detectedLanguage}.',
-                                style: const TextStyle(
-                                  color: Colors.amber,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+      builder: (context) => _blockingDialog(
+        svc: svc,
+        url: url,
+        controller: controller,
+        reason: reason,
+        reasonIcon: reasonIcon,
+        reasonLabel: reasonLabel,
+        reasonColor: reasonColor,
+        match: match,
+        body: TextField(
+          style: const TextStyle(color: Colors.white),
+          obscureText: true,
+          autofocus: true,
+          onChanged: (v) => enteredPass = v,
+          decoration: const InputDecoration(
+            hintText: "Wpisz hasło",
+            hintStyle: TextStyle(color: Colors.grey),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.blue),
             ),
-            TextField(
-              style: const TextStyle(color: Colors.white),
-              obscureText: true,
-              autofocus: true,
-              onChanged: (v) => enteredPass = v,
-              decoration: const InputDecoration(
-                hintText: "Wpisz hasło",
-                hintStyle: TextStyle(color: Colors.grey),
-                enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blue),
-                ),
-              ),
+          ),
+        ),
+        onUnlock: () {
+          svc.isVerifying = false;
+          if (svc.verifyPassword(enteredPass)) {
+            svc.recordAuth(url.toString());
+            Navigator.pop(context);
+            controller?.loadUrl(urlRequest: URLRequest(url: url));
+          } else {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text("Błędne hasło!")));
+          }
+        },
+      ),
+    );
+  }
+
+  void _showPatternDialog(
+    BrowserService svc,
+    WebUri url,
+    InAppWebViewController? controller,
+    BlockReason reason,
+    String reasonIcon,
+    String reasonLabel,
+    Color reasonColor,
+    BlockMatch? match,
+  ) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _blockingDialog(
+        svc: svc,
+        url: url,
+        controller: controller,
+        reason: reason,
+        reasonIcon: reasonIcon,
+        reasonLabel: reasonLabel,
+        reasonColor: reasonColor,
+        match: match,
+        body: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Narysuj wzór, aby odblokować',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            PatternLock(
+              onPatternEntered: (pattern) {
+                if (svc.verifyPattern(pattern)) {
+                  svc.isVerifying = false;
+                  svc.recordAuth(url.toString());
+                  Navigator.pop(ctx);
+                  controller?.loadUrl(urlRequest: URLRequest(url: url));
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Błędny wzór!")),
+                  );
+                }
+              },
             ),
           ],
         ),
-        actions: [
+        onCancel: () {
+          svc.isVerifying = false;
+          Navigator.pop(ctx);
+        },
+      ),
+    );
+  }
+
+  Widget _blockingDialog({
+    required BrowserService svc,
+    required WebUri url,
+    required InAppWebViewController? controller,
+    required BlockReason reason,
+    required String reasonIcon,
+    required String reasonLabel,
+    required Color reasonColor,
+    required BlockMatch? match,
+    required Widget body,
+    VoidCallback? onUnlock,
+    VoidCallback? onCancel,
+  }) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF202124),
+      title: const Text(
+        "Strona Chroniona",
+        style: TextStyle(color: Colors.white),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _blockingReasonBanner(reasonIcon, reasonLabel, reasonColor, match, svc),
+          body,
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: onCancel ?? () {
+            svc.isVerifying = false;
+            Navigator.pop(context);
+          },
+          child: const Text("ANULUJ", style: TextStyle(color: Colors.grey)),
+        ),
+        if (onUnlock != null)
           TextButton(
-            onPressed: () {
-              svc.isVerifying = false;
-              Navigator.pop(context);
-            },
-            child: const Text("ANULUJ", style: TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () {
-              svc.isVerifying = false;
-              if (svc.verifyPassword(enteredPass)) {
-                svc.recordAuth(url.toString());
-                Navigator.pop(context);
-                controller?.loadUrl(urlRequest: URLRequest(url: url));
-              } else {
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(const SnackBar(content: Text("Błędne hasło!")));
-              }
-            },
+            onPressed: onUnlock,
             child: const Text(
               "ODBLOKUJ",
               style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _blockingReasonBanner(
+    String reasonIcon,
+    String reasonLabel,
+    Color reasonColor,
+    BlockMatch? match,
+    BrowserService svc,
+  ) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: reasonColor.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: reasonColor.withOpacity(0.4)),
+      ),
+      child: Row(
+        children: [
+          Text(reasonIcon, style: const TextStyle(fontSize: 20)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Powód blokady",
+                  style: TextStyle(
+                    color: reasonColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  reasonLabel,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (match != null) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: reasonColor.withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '"${match.displayWord}"',
+                      style: TextStyle(
+                        color: reasonColor,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (match.token != match.displayWord) ...[
+                    const SizedBox(height: 2),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: reasonColor.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        'Token: ${match.token}',
+                        style: TextStyle(
+                          color: reasonColor.withOpacity(0.8),
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (match.detectedLanguage != null &&
+                      !svc.dictionaryService
+                          .isSupportedLocale(match.detectedLanguage!)) ...[
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: Colors.amber.withOpacity(0.4),
+                        ),
+                      ),
+                      child: Text(
+                        'Słowo najprawdopodobniej pochodzi z języka "${match.detectedLanguage}", '
+                        'który nie jest obsługiwany. '
+                        'Jeśli uważasz, że słowo zostało błędnie zablokowane, '
+                        'pobierz obsługę języka ${match.detectedLanguage}.',
+                        style: const TextStyle(
+                          color: Colors.amber,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ],
             ),
           ),
         ],
@@ -329,10 +424,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   }
 
   Future<bool?> _askForPasswordOnly(BrowserService svc) async {
-    if (svc.isBiometricType) {
-      final authed = await svc.verifyWithBiometrics();
-      return authed;
-    }
+    if (svc.isBiometricType) return true;
     if (svc.isPatternType) {
       bool ok = false;
       await showDialog(
@@ -1796,6 +1888,10 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   // ── Hasło (ustawienia) ────────────────────────────────────────────────────
 
   void _setupPassword(BrowserService svc) async {
+    if (svc.isBiometricType) {
+      await svc.clearPassword();
+      if (!context.mounted) return;
+    }
     if (svc.hasPassword) {
       final ok = await _askForPasswordOnly(svc);
       if (ok != true) return;

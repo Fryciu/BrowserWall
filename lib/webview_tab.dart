@@ -45,6 +45,11 @@ class _WebViewTabState extends State<WebViewTab>
   static const MethodChannel _customSchemeChannel = MethodChannel(
     'app/custom_scheme',
   );
+  static final RegExp _cdRe = RegExp(
+    r'''filename[^;=\n]*=((['"]).*?\2|[^;\n]*)''',
+  );
+  static final RegExp _fileNameBadCharsRe = RegExp(r'[<>:"/\\|?*]');
+  static final RegExp _multiSpaceRe = RegExp(r'\s+');
 
   @override
   bool get wantKeepAlive => true;
@@ -331,9 +336,7 @@ class _WebViewTabState extends State<WebViewTab>
 
   String _fileNameFromCd(String cd) {
     if (cd.isEmpty) return '';
-    final match = RegExp(
-      r'''filename[^;=\n]*=((['"]).*?\2|[^;\n]*)''',
-    ).firstMatch(cd);
+    final match = _cdRe.firstMatch(cd);
     if (match == null) return '';
     return match.group(1)!.replaceAll('"', '').replaceAll("'", '').trim();
   }
@@ -360,8 +363,8 @@ class _WebViewTabState extends State<WebViewTab>
         .first
         .split('/')
         .last
-        .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
-        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(_fileNameBadCharsRe, '_')
+        .replaceAll(_multiSpaceRe, ' ')
         .trim();
   }
 
@@ -395,7 +398,12 @@ class _WebViewTabState extends State<WebViewTab>
     super.didUpdateWidget(oldWidget);
     final ctrl = _controller;
     if (ctrl == null) { _lastTab = widget.tab; return; }
-    if (identical(widget.tab, _lastTab)) return;
+    if (identical(widget.tab, _lastTab)) {
+      if (!identical(widget.tab.controller, ctrl)) {
+        widget.tab.controller = ctrl;
+      }
+      return;
+    }
     _lastTab = widget.tab;
     widget.tab.controller = ctrl;
     final url = widget.tab.url;
@@ -463,13 +471,13 @@ class _WebViewTabState extends State<WebViewTab>
                 final urlString = u.toString();
                 if (!urlString.startsWith('about:') &&
                     urlString != 'about:blank') {
-                  svc.updateTab(tab, url: urlString);
+                  svc.updateTab(widget.tab, url: urlString);
                 }
               });
             }
           },
           onTitleChanged: (controller, title) {
-            svc.updateTab(tab, title: title);
+            svc.updateTab(widget.tab, title: title);
           },
           onWebViewCreated: (c) {
             _controller = c;
@@ -518,7 +526,7 @@ class _WebViewTabState extends State<WebViewTab>
               callback: (args) {
                 if (args.isEmpty) return;
                 final isPlaying = args[0] == true;
-                svc.setTabAudio(tab, isPlaying);
+                svc.setTabAudio(widget.tab, isPlaying);
               },
             );
 
@@ -529,7 +537,7 @@ class _WebViewTabState extends State<WebViewTab>
                 if (args.isEmpty) return;
                 final newTitle = args[0]?.toString();
                 if (newTitle != null && newTitle.isNotEmpty) {
-                  svc.updateTab(tab, title: newTitle);
+                  svc.updateTab(widget.tab, title: newTitle);
                 }
               },
             );
@@ -631,7 +639,7 @@ class _WebViewTabState extends State<WebViewTab>
                 return;
               }
               // Aktualizuj URL natychmiast gdy strona zaczyna się ładować
-              svc.updateTab(tab, url: urlString);
+              svc.updateTab(widget.tab, url: urlString);
             } else if (!urlString.startsWith('about:') &&
                 !urlString.startsWith('file:') &&
                 !urlString.startsWith('data:')) {
@@ -830,7 +838,7 @@ class _WebViewTabState extends State<WebViewTab>
                 urlString != "about:blank") {
               // Natychmiastowa aktualizacja
               final title = await c.getTitle();
-              svc.updateTab(tab, url: urlString, title: title);
+              svc.updateTab(widget.tab, url: urlString, title: title);
               // urlController jest aktualizowany przez _syncUrlBar w BrowserScreen
 
               // Wykrywanie odtwarzania audio
@@ -875,7 +883,7 @@ class _WebViewTabState extends State<WebViewTab>
                   if (!mounted) return;
                   final t = await c.getTitle();
                   if (t != null && t.isNotEmpty) {
-                    svc.updateTab(tab, title: t);
+                    svc.updateTab(widget.tab, title: t);
                   }
                 });
               }
@@ -1017,7 +1025,7 @@ class _WebViewTabState extends State<WebViewTab>
             if (!blocked) {
               _timeLimitBlocked = false;
               // Aktualizuj URL od razu przy nawigacji — nie czekaj na onLoadStop
-              svc.updateTab(tab, url: urlString);
+              svc.updateTab(widget.tab, url: urlString);
             }
 
             return blocked

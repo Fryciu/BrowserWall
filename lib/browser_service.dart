@@ -13,118 +13,9 @@ import 'package:http/http.dart' as http;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dictionary_service.dart';
 import 'package:google_mlkit_language_id/google_mlkit_language_id.dart';
-import 'package:crypto/crypto.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:local_auth/local_auth.dart';
-
-// ─────────────────────────────────────────────
-//  MODEL
-// ─────────────────────────────────────────────
-
-enum PasswordType { text, biometric, pattern }
-
-class TabModel {
-  InAppWebViewController? controller;
-  String url;
-  String title;
-  bool loaded;
-  bool isPlayingAudio = false;
-  bool isIncognito = false;
-  TabModel({
-    required this.url,
-    this.title = "Nowa karta",
-    this.loaded = false,
-    this.isIncognito = false,
-  });
-}
-
-// ─────────────────────────────────────────────
-//  SERWIS (cała logika biznesowa / backendowa)
-// ─────────────────────────────────────────────
-enum BlockReason { none, proxy, content, blacklist, timeLimit }
-
-/// Informacja o dopasowaniu podczas blokowania.
-class BlockMatch {
-  final String word;
-  final String? translation;
-  final String token;
-  String? detectedLanguage;
-
-  BlockMatch(this.word, this.token, {this.translation, this.detectedLanguage});
-
-  String get displayWord => translation != null ? '$word ($translation)' : word;
-
-  bool get isFuzzyMatch => token != word;
-}
-
-/// Tryb reguły czasowej
-enum TimeRuleMode { dailyLimit, timeWindow }
-
-/// Reguła czasowa dla domeny.
-/// [mode] = dailyLimit: max [dailyLimitMinutes] minut dziennie
-/// [mode] = timeWindow: blokada w godzinach [windowStart]-[windowEnd]
-/// [allowedDays] = lista dni tygodnia (1=pn, 7=nd) gdy reguła obowiązuje (puste = wszystkie dni)
-class TimeRule {
-  final String domain;
-  final TimeRuleMode mode;
-  final int dailyLimitMinutes; // dla trybu dailyLimit
-  final TimeOfDay windowStart; // dla trybu timeWindow
-  final TimeOfDay windowEnd; // dla trybu timeWindow
-  final List<int> allowedDays; // 1=pn..7=nd, puste=każdy dzień
-
-  const TimeRule({
-    required this.domain,
-    this.mode = TimeRuleMode.dailyLimit,
-    this.dailyLimitMinutes = 30,
-    this.windowStart = const TimeOfDay(hour: 8, minute: 0),
-    this.windowEnd = const TimeOfDay(hour: 22, minute: 0),
-    this.allowedDays = const [],
-  });
-
-  Map<String, dynamic> toJson() => {
-    'domain': domain,
-    'mode': mode.name,
-    'dailyLimitMinutes': dailyLimitMinutes,
-    'windowStartH': windowStart.hour,
-    'windowStartM': windowStart.minute,
-    'windowEndH': windowEnd.hour,
-    'windowEndM': windowEnd.minute,
-    'allowedDays': allowedDays,
-  };
-
-  factory TimeRule.fromJson(Map<String, dynamic> j) => TimeRule(
-    domain: j['domain'] as String,
-    mode: TimeRuleMode.values.firstWhere(
-      (e) => e.name == j['mode'],
-      orElse: () => TimeRuleMode.dailyLimit,
-    ),
-    dailyLimitMinutes: j['dailyLimitMinutes'] as int? ?? 30,
-    windowStart: TimeOfDay(
-      hour: j['windowStartH'] as int? ?? 8,
-      minute: j['windowStartM'] as int? ?? 0,
-    ),
-    windowEnd: TimeOfDay(
-      hour: j['windowEndH'] as int? ?? 22,
-      minute: j['windowEndM'] as int? ?? 0,
-    ),
-    allowedDays: List<int>.from(j['allowedDays'] ?? []),
-  );
-
-  TimeRule copyWith({
-    TimeRuleMode? mode,
-    int? dailyLimitMinutes,
-    TimeOfDay? windowStart,
-    TimeOfDay? windowEnd,
-    List<int>? allowedDays,
-  }) => TimeRule(
-    domain: domain,
-    mode: mode ?? this.mode,
-    dailyLimitMinutes: dailyLimitMinutes ?? this.dailyLimitMinutes,
-    windowStart: windowStart ?? this.windowStart,
-    windowEnd: windowEnd ?? this.windowEnd,
-    allowedDays: allowedDays ?? this.allowedDays,
-  );
-}
+import 'models.dart';
+export 'models.dart';
+import 'auth_service.dart';
 
 class BrowserService extends ChangeNotifier {
   String? pendingShortcutUrl;
@@ -354,7 +245,12 @@ class BrowserService extends ChangeNotifier {
     await prefs.setString('time_rules', encoded);
   }
 
+  DateTime _lastUsageSave = DateTime(2000);
+
   Future<void> _saveUsage() async {
+    final now = DateTime.now();
+    if (now.difference(_lastUsageSave).inSeconds < 15) return;
+    _lastUsageSave = now;
     final prefs = await _getPrefs;
     _ensureTodayKey();
     await prefs.setString('usage_$_todayKey', json.encode(_todayUsage));
@@ -423,8 +319,7 @@ class BrowserService extends ChangeNotifier {
   String? _passwordHash;
   String? _patternHash;
   PasswordType passwordType = PasswordType.text;
-  final _secureStorage = FlutterSecureStorage();
-  final _localAuth = LocalAuthentication();
+  final authService = AuthService();
   bool get hasPassword => _hasPassword;
   bool get isBiometricType => passwordType == PasswordType.biometric;
   bool get isPatternType => passwordType == PasswordType.pattern;
@@ -1453,13 +1348,17 @@ class BrowserService extends ChangeNotifier {
     String? storedHash;
     String? storedPattern;
     try {
-      storedHash = await _secureStorage.read(key: 'password_hash');
-      storedPattern = await _secureStorage.read(key: 'pattern_hash');
+      storedHash = await authService.readHash('password_hash');
+      storedPattern = await authService.readHash('pattern_hash');
     } catch (_) {}
     final typeStr = p.getString('password_type');
     if (typeStr == 'biometric') {
-      passwordType = PasswordType.biometric;
-      _hasPassword = true;
+      // Biometria usunięta — migracja: brak hasła
+      _hasPassword = false;
+      passwordType = PasswordType.text;
+      await authService.deleteHash('password_hash');
+      await authService.deleteHash('pattern_hash');
+      await p.remove('password_type');
     } else if (typeStr == 'pattern') {
       passwordType = PasswordType.pattern;
       if (storedPattern != null) {
@@ -1476,8 +1375,8 @@ class BrowserService extends ChangeNotifier {
     if (!_hasPassword) {
       final oldPassword = p.getString('user_password');
       if (oldPassword != null) {
-        _passwordHash = _hashPassword(oldPassword);
-        await _secureStorage.write(key: 'password_hash', value: _passwordHash!);
+        _passwordHash = authService.hashPassword(oldPassword);
+        await authService.writeHash('password_hash', _passwordHash!);
         _hasPassword = true;
         passwordType = PasswordType.text;
         await _savePasswordType();
@@ -2241,6 +2140,9 @@ class BrowserService extends ChangeNotifier {
     'slabiej', 'jasniej', 'ciemniej', 'cieplej', 'zimniej',
   };
 
+  static final RegExp _sepRe = RegExp(r'[.\-_/]');
+  static final RegExp _cleanRe = RegExp(r'[^a-z ]');
+
   /// Normalizuje tekst: leet speak, diakrytyki, separatory
   String _normalize(String s) {
     s = s.toLowerCase();
@@ -2264,9 +2166,9 @@ class BrowserService extends ChangeNotifier {
         .replaceAll('\$', 's')
         .replaceAll('+', 't');
     // Separatory → spacja (będziemy splitować)
-    s = s.replaceAll(RegExp(r'[.\-_/]'), ' ');
+    s = s.replaceAll(_sepRe, ' ');
     // Usuń wszystko poza a-z i spacją
-    s = s.replaceAll(RegExp(r'[^a-z ]'), '');
+    s = s.replaceAll(_cleanRe, '');
     return s;
   }
 
@@ -2715,25 +2617,7 @@ class BrowserService extends ChangeNotifier {
 
   // ── Weryfikacja hasłem ───────────────────────
   bool canSkipAuth(String urlString) {
-    if (_lastAuthTime == null) return false;
-    if (DateTime.now().difference(_lastAuthTime!).inSeconds > 30) return false;
-
-    // Porównuj domeny bazowe zamiast pełnych URLi
-    final authUri = Uri.tryParse(_lastAuthUrl ?? '');
-    final currentUri = Uri.tryParse(urlString);
-    if (authUri == null || currentUri == null) return false;
-
-    // youtube.com == m.youtube.com == www.youtube.com
-    final authDomain = _baseDomain(authUri.host);
-    final currentDomain = _baseDomain(currentUri.host);
-
-    return authDomain == currentDomain;
-  }
-
-  String _baseDomain(String host) {
-    final parts = host.split('.');
-    if (parts.length <= 2) return host;
-    return '${parts[parts.length - 2]}.${parts[parts.length - 1]}';
+    return authService.canSkipAuth(_lastAuthTime, _lastAuthUrl, urlString);
   }
 
   void recordAuth(String urlString) {
@@ -2785,29 +2669,21 @@ class BrowserService extends ChangeNotifier {
     return null; // nie rozpoznana wyszukiwarka
   }
 
-  String _hashPassword(String password) {
-    return sha256.convert(utf8.encode(password)).toString();
-  }
-
-  String _patternToString(List<int> pattern) {
-    return pattern.join(',');
-  }
-
   bool verifyPassword(String entered) {
     if (passwordType != PasswordType.text || _passwordHash == null) return false;
-    return _hashPassword(entered) == _passwordHash;
+    return authService.verifyPassword(entered, _passwordHash);
   }
 
   bool verifyPattern(List<int> pattern) {
     if (passwordType != PasswordType.pattern || _patternHash == null) return false;
-    return _hashPassword(_patternToString(pattern)) == _patternHash;
+    return authService.verifyPattern(pattern, _patternHash);
   }
 
   Future<void> savePassword(String newPassword) async {
     passwordType = PasswordType.text;
-    final hash = _hashPassword(newPassword);
-    await _secureStorage.write(key: 'password_hash', value: hash);
-    await _secureStorage.delete(key: 'pattern_hash');
+    final hash = authService.hashPassword(newPassword);
+    await authService.writeHash('password_hash', hash);
+    await authService.deleteHash('pattern_hash');
     _passwordHash = hash;
     _patternHash = null;
     _hasPassword = true;
@@ -2817,9 +2693,9 @@ class BrowserService extends ChangeNotifier {
 
   Future<void> savePattern(List<int> pattern) async {
     passwordType = PasswordType.pattern;
-    final hash = _hashPassword(_patternToString(pattern));
-    await _secureStorage.write(key: 'pattern_hash', value: hash);
-    await _secureStorage.delete(key: 'password_hash');
+    final hash = authService.hashPassword(authService.patternToString(pattern));
+    await authService.writeHash('pattern_hash', hash);
+    await authService.deleteHash('password_hash');
     _patternHash = hash;
     _passwordHash = null;
     _hasPassword = true;
@@ -2827,20 +2703,9 @@ class BrowserService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> enableBiometric() async {
-    passwordType = PasswordType.biometric;
-    _passwordHash = null;
-    _patternHash = null;
-    _hasPassword = true;
-    await _secureStorage.delete(key: 'password_hash');
-    await _secureStorage.delete(key: 'pattern_hash');
-    await _savePasswordType();
-    notifyListeners();
-  }
-
   Future<void> clearPassword() async {
-    await _secureStorage.delete(key: 'password_hash');
-    await _secureStorage.delete(key: 'pattern_hash');
+    await authService.deleteHash('password_hash');
+    await authService.deleteHash('pattern_hash');
     _passwordHash = null;
     _patternHash = null;
     _hasPassword = false;
@@ -2852,8 +2717,7 @@ class BrowserService extends ChangeNotifier {
   Future<void> _savePasswordType() async {
     final prefs = await _getPrefs;
     String? typeStr;
-    if (passwordType == PasswordType.biometric) typeStr = 'biometric';
-    else if (passwordType == PasswordType.pattern) typeStr = 'pattern';
+    if (passwordType == PasswordType.pattern) typeStr = 'pattern';
     if (typeStr != null) {
       await prefs.setString('password_type', typeStr);
     } else {
@@ -2861,32 +2725,10 @@ class BrowserService extends ChangeNotifier {
     }
   }
 
-  Future<bool> get isBiometricAvailable async {
-    try {
-      return await _localAuth.canCheckBiometrics ||
-          await _localAuth.isDeviceSupported();
-    } catch (e) {
-      return false;
-    }
-  }
+  Future<bool> get isBiometricAvailable => authService.isBiometricAvailable;
 
-  Future<bool> verifyWithBiometrics({String reason = 'Odblokuj, aby kontynuować'}) async {
-    try {
-      await _localAuth.stopAuthentication();
-    } catch (_) {}
-    try {
-      return await _localAuth.authenticate(
-        localizedReason: reason,
-        options: const AuthenticationOptions(
-          biometricOnly: false,
-          stickyAuth: true,
-        ),
-      );
-    } catch (e) {
-      debugPrint('Biometric auth error: $e');
-      return false;
-    }
-  }
+  Future<bool> verifyWithBiometrics({String reason = 'Odblokuj, aby kontynuować'}) =>
+      authService.verifyWithBiometrics(reason: reason);
 
   List<ContentBlocker> getContentBlockers() {
     if (!adBlockEnabled) return [];
@@ -3189,6 +3031,12 @@ class BrowserService extends ChangeNotifier {
   }
 
   void switchTab(int index) {
+    debugPrint(
+      '🔍 switchTab: index=$index mode=$incognitoMode '
+      'normalIdx=$normalTabIndex incogIdx=$incognitoTabIndex '
+      'tabs.len=${tabs.length} tabLoaded=${tabs[index].loaded} '
+      'tabUrl=${tabs[index].url} tabCtrl=${tabs[index].controller}',
+    );
     currentTabIndex = index;
     tabs[index].loaded = true;
     saveTabs();
@@ -3216,19 +3064,49 @@ class BrowserService extends ChangeNotifier {
       }
     }
     if (changed) {
-      saveTabs();
+      _debouncedSaveTabs();
       notifyListeners();
     }
   }
+
+  Timer? _saveTabsDebounce;
+
+  void _debouncedSaveTabs() {
+    _saveTabsDebounce?.cancel();
+    _saveTabsDebounce = Timer(const Duration(milliseconds: 500), () {
+      unawaited(saveTabs());
+    });
+  }
+
+  void cancelSaveTabsDebounce() {
+    _saveTabsDebounce?.cancel();
+    _saveTabsDebounce = null;
+  }
+
+  // Histereza audio – wymagaj 2 kolejnych potwierdzeń zmiany
+  final Map<TabModel, bool> _audioPending = {};
 
   // Aktualizuj metadane przez referencję do obiektu TabModel (nie przez kontroler)
   void setTabAudio(TabModel tab, bool isPlaying) {
     final index = tabs.indexWhere((t) => t == tab);
     if (index == -1) return;
-    if (tabs[index].isPlayingAudio != isPlaying) {
-      tabs[index].isPlayingAudio = isPlaying;
-      notifyListeners();
+    final current = tabs[index].isPlayingAudio;
+    if (current == isPlaying) {
+      _audioPending.remove(tab);
+      return;
     }
+    final prev = _audioPending[tab];
+    if (prev == null) {
+      _audioPending[tab] = isPlaying;
+      return;
+    }
+    if (prev != isPlaying) {
+      _audioPending.remove(tab);
+      return;
+    }
+    _audioPending.remove(tab);
+    tabs[index].isPlayingAudio = isPlaying;
+    notifyListeners();
   }
 
   void updateTab(TabModel tab, {String? url, String? title}) {
@@ -3409,6 +3287,7 @@ class BrowserService extends ChangeNotifier {
   }
 
   Future<void> saveTabs() async {
+    cancelSaveTabsDebounce();
     if (incognitoMode) return;
     final prefs = await _getPrefs;
     final normalTabs = tabs.where((t) => !t.isIncognito).toList();

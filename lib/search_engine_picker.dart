@@ -85,10 +85,7 @@ class _SearchEnginePickerState extends State<SearchEnginePicker> {
   Future<bool> _verifyPassword(BrowserService svc) async {
     if (!svc.hasPassword) return true;
 
-    if (svc.isBiometricType) {
-      return svc.verifyWithBiometrics();
-    }
-
+    if (svc.isBiometricType) return true;
     if (svc.isPatternType) {
       bool ok = false;
       await showDialog(

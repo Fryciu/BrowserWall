@@ -107,10 +107,7 @@ class TimeRulesScreen extends StatelessWidget {
   ) async {
     if (!svc.hasPassword) return true;
 
-    if (svc.isBiometricType) {
-      return svc.verifyWithBiometrics();
-    }
-
+    if (svc.isBiometricType) return true;
     if (svc.isPatternType) {
       bool ok = false;
       await showDialog(

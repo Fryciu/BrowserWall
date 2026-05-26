@@ -19,18 +19,26 @@ class _BrowserScreenState extends State<BrowserScreen>
     with BrowserScreenDialogsMixin {
   final TextEditingController urlController = TextEditingController();
   final FocusNode urlFocusNode = FocusNode();
+  TabModel? _lastUrlTab;
+  int _urlBarTapCount = 0;
 
   @override
   void initState() {
     super.initState();
     urlFocusNode.addListener(() {
-      if (mounted) setState(() {});
+      if (mounted) {
+        if (!urlFocusNode.hasFocus) {
+          _urlBarTapCount = 0;
+          urlController.text = context.read<BrowserService>().currentTab.url;
+        }
+        setState(() {});
+      }
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final svc = context.read<BrowserService>();
+      _lastUrlTab = svc.currentTab;
       svc.addListener(_handlePendingShortcut);
-      svc.addListener(_syncUrlBar);
       _handlePendingShortcut();
       // Czekaj na zakończenie init() zanim sprawdzisz czy wyszukiwarka jest wybrana
       svc.ready.then((_) {
@@ -47,34 +55,28 @@ class _BrowserScreenState extends State<BrowserScreen>
     });
   }
 
-  void _syncUrlBar() {
-    final svc = context.read<BrowserService>();
-    final currentUrl = svc.currentTab.url;
-    if (urlController.text != currentUrl && !urlFocusNode.hasFocus) {
-      urlController.text = currentUrl;
-    }
-  }
-
   void _handlePendingShortcut() {
     final svc = context.read<BrowserService>();
     final url = svc.pendingShortcutUrl;
     if (url == null) return;
 
+    svc.pendingShortcutUrl = null;
+
     final existingIndex = svc.tabs.indexWhere((tab) => tab.url == url);
     if (existingIndex != -1) {
-      svc.pendingShortcutUrl = null;
       svc.switchTab(existingIndex);
     } else {
-      svc.pendingShortcutUrl = null;
       svc.addNewTab();
-      svc.pendingShortcutUrl = url;
+      if (svc.tabs.isNotEmpty) {
+        svc.tabs.last.url = url;
+        svc.notifyUI();
+      }
     }
   }
 
   @override
   void dispose() {
     context.read<BrowserService>().removeListener(_handlePendingShortcut);
-    context.read<BrowserService>().removeListener(_syncUrlBar);
     urlFocusNode.dispose();
     urlController.dispose();
     super.dispose();
@@ -159,6 +161,20 @@ class _BrowserScreenState extends State<BrowserScreen>
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<BrowserService>();
+    final currentTab = svc.currentTab;
+    final currentUrl = currentTab.url;
+    if (!identical(currentTab, _lastUrlTab)) {
+      _lastUrlTab = currentTab;
+      urlController.text = currentUrl;
+      if (urlFocusNode.hasFocus) {
+        urlFocusNode.unfocus();
+      }
+    } else if (urlController.text != currentUrl && !urlFocusNode.hasFocus) {
+      urlController.text = currentUrl;
+    }
+    final modeTabs = svc.tabs.where(
+      (t) => t.isIncognito == svc.incognitoMode,
+    ).toList();
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: const SystemUiOverlayStyle(
@@ -194,19 +210,16 @@ class _BrowserScreenState extends State<BrowserScreen>
                           Expanded(
                             child: ListView.builder(
                               scrollDirection: Axis.horizontal,
-                              itemCount: svc.tabs.where(
-                                (t) => t.isIncognito == svc.incognitoMode,
-                              ).length,
+                              itemCount: modeTabs.length,
                               itemBuilder: (context, i) {
-                                final modeTabs = svc.tabs.where(
-                                  (t) => t.isIncognito == svc.incognitoMode,
-                                ).toList();
-                                final index = svc.tabs.indexOf(modeTabs[i]);
+                                final tab = modeTabs[i];
+                                final index = svc.tabs.indexOf(tab);
                                 return GestureDetector(
                                   onTap: () {
+                                    debugPrint(
+                                      '🔍 tabBar tap: index=$index tab=$tab',
+                                    );
                                     svc.switchTab(index);
-                                    urlController.text =
-                                        svc.tabs[index].url;
                                   },
                                   child: Container(
                                     margin:
@@ -371,7 +384,15 @@ class _BrowserScreenState extends State<BrowserScreen>
                                         ),
                                 ),
                                 onTap: () {
-                                  if (urlController.text.isNotEmpty) {
+                                  if (urlController.text.isEmpty) return;
+                                  _urlBarTapCount++;
+                                  if (_urlBarTapCount >= 3) {
+                                    urlFocusNode.unfocus();
+                                  } else if (_urlBarTapCount == 2) {
+                                    urlController.selection = TextSelection.collapsed(
+                                      offset: urlController.text.length,
+                                    );
+                                  } else {
                                     urlController.selection = TextSelection(
                                       baseOffset: 0,
                                       extentOffset: urlController.text.length,
@@ -379,12 +400,22 @@ class _BrowserScreenState extends State<BrowserScreen>
                                   }
                                 },
                                 onSubmitted: (v) async {
+                                  _urlBarTapCount = 0;
+                                  final ctrl = svc.currentTab.controller;
+                                  debugPrint(
+                                    '🔍 onSubmitted: v="$v" ctrl=$ctrl tabIdx=${svc.tabs.indexOf(svc.currentTab)}',
+                                  );
+                                  if (ctrl == null) {
+                                    debugPrint('🔍 onSubmitted: ctrl IS NULL - return');
+                                    return;
+                                  }
                                   final targetUrl = svc.buildTargetUrl(v);
                                   final targetUrlString = targetUrl.toString();
+                                  debugPrint('🔍 onSubmitted: targetUrl=$targetUrlString');
 
                                   final blocked = await svc.handleNavigation(
                                     targetUrlString,
-                                    svc.currentTab.controller!,
+                                    ctrl,
                                     (url, ctrl, reason, match) =>
                                         showPasswordDialog(
                                           svc,
@@ -398,15 +429,18 @@ class _BrowserScreenState extends State<BrowserScreen>
                                           SnackBar(
                                             content: Text(message),
                                             backgroundColor: Colors.redAccent,
-                                            behavior: SnackBarBehavior.floating,
+                                            behavior:
+                                                SnackBarBehavior.floating,
                                           ),
                                         ),
                                   );
+                                  debugPrint('🔍 onSubmitted: blocked=$blocked');
 
                                   if (!blocked) {
-                                    svc.currentTab.controller?.loadUrl(
+                                    ctrl.loadUrl(
                                       urlRequest: URLRequest(url: targetUrl),
                                     );
+                                    debugPrint('🔍 onSubmitted: loadUrl called');
                                   }
                                 },
                               ),
@@ -499,7 +533,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                     ),
                     WebViewTab(
                       key: const ValueKey('incognito_webview'),
-                      tab: svc.incognitoTab ?? svc.normalTab,
+                      tab: svc.incognitoTab ??
+                          TabModel(url: 'about:blank', loaded: true),
                       svc: svc,
                       urlController: urlController,
                       incognito: true,
