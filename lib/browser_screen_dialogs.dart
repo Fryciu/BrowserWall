@@ -7,6 +7,7 @@ import 'dictionary_service.dart';
 import 'time_rules_screen.dart';
 import 'search_engine_picker.dart';
 import 'password_dialog.dart';
+import 'pattern_lock.dart';
 import 'package:provider/provider.dart';
 
 /// Mixin zawierający wszystkie metody dialogów/menu dla BrowserScreen.
@@ -327,7 +328,53 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
     );
   }
 
-  Future<bool?> _askForPasswordOnly(BrowserService svc) {
+  Future<bool?> _askForPasswordOnly(BrowserService svc) async {
+    if (svc.isBiometricType) {
+      final authed = await svc.verifyWithBiometrics();
+      return authed;
+    }
+    if (svc.isPatternType) {
+      bool ok = false;
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF202124),
+          title: const Text(
+            "Wymagany wzór",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Narysuj wzór, aby odblokować',
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              PatternLock(
+                onPatternEntered: (pattern) {
+                  if (svc.verifyPattern(pattern)) {
+                    ok = true;
+                    Navigator.pop(ctx);
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Błędny wzór!")),
+                    );
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("ANULUJ"),
+            ),
+          ],
+        ),
+      );
+      return ok;
+    }
     String entered = "";
     return showDialog<bool>(
       context: context,
@@ -1453,7 +1500,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                 size: 20,
                               ),
                               onPressed: () async {
-                                if (svc.savedPassword != null) {
+                                if (svc.hasPassword) {
                                   final granted = await _askForPasswordOnly(
                                     svc,
                                   );
@@ -1703,7 +1750,14 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                   }
                                 });
                               }
-                            : () {
+                            : () async {
+                                final tab = svc.tabs[index];
+                                if (tab.isIncognito != svc.incognitoMode) {
+                                  final needsWarning = await svc.toggleIncognito();
+                                  if (needsWarning && context.mounted) {
+                                    showAndroidIncognitoWarning(context);
+                                  }
+                                }
                                 svc.switchTab(index);
                                 urlController.text = svc.currentTab.url;
                                 Navigator.pop(context);
@@ -1741,7 +1795,12 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
 
   // ── Hasło (ustawienia) ────────────────────────────────────────────────────
 
-  void _setupPassword(BrowserService svc) {
+  void _setupPassword(BrowserService svc) async {
+    if (svc.hasPassword) {
+      final ok = await _askForPasswordOnly(svc);
+      if (ok != true) return;
+    }
+    if (!context.mounted) return;
     showDialog(
       context: context,
       builder: (context) => PasswordDialog(svc: svc),
@@ -1751,7 +1810,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
   // ── Czarna lista ─────────────────────────────────────────────────────────
 
   void _showKeywordsEditor(BrowserService svc) {
-    bool authenticated = svc.savedPassword == null;
+    bool authenticated = !svc.hasPassword;
     final addControllers = <String, TextEditingController>{};
     showDialog(
       context: context,
@@ -2067,8 +2126,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                                                     tooltip:
                                                         'Tłumaczenia (wymaga hasła)',
                                                     onPressed: () async {
-                                                      if (svc.savedPassword !=
-                                                          null) {
+                                                      if (svc.hasPassword) {
                                                         final granted =
                                                             await _askForPasswordOnly(
                                                               svc,
@@ -2653,7 +2711,7 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
 
   /// Pokazuje dialog z listą pornKeywords i ich tłumaczeniami — wymaga hasła
   void showPornKeywordsViewer(BrowserService svc) async {
-    if (svc.savedPassword != null) {
+    if (svc.hasPassword) {
       final granted = await _askForPasswordOnly(svc);
       if (granted != true) return;
     }
@@ -2783,7 +2841,10 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
                     // TRYB INCOGNITO
                     GestureDetector(
                       onTap: () async {
-                        await svc.toggleIncognito();
+                        final needsWarning = await svc.toggleIncognito();
+                        if (needsWarning && context.mounted) {
+                          showAndroidIncognitoWarning(context);
+                        }
                         setModalState(() {});
                       },
                       child: Container(
@@ -3448,6 +3509,42 @@ mixin BrowserScreenDialogsMixin<T extends StatefulWidget> on State<T> {
     }
     days.addAll(grouped.keys);
   }
+
+  void showAndroidIncognitoWarning(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF202124),
+        title: const Row(
+          children: [
+            Icon(Icons.info_outline, color: Colors.orange, size: 22),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Ograniczenia incognito',
+                style: TextStyle(color: Colors.white, fontSize: 18),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'Twoja wersja Androida nie wspiera w pełni izolacji trybu incognito. '
+          'Jeśli jesteś zalogowany(-a) na konto Google w przeglądarce, '
+          'wyniki wyszukiwania mogą być nadal personalizowane na podstawie '
+          'Twojej aktywności.\n\n'
+          'Aby uzyskać pełną prywatność, wyloguj się ręcznie z konta Google '
+          'przed rozpoczęciem przeglądania w trybie incognito.',
+          style: TextStyle(color: Colors.white70, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK', style: TextStyle(color: Colors.blue)),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _BlockingScreen extends StatefulWidget {
@@ -3496,7 +3593,7 @@ class _BlockingScreenState extends State<_BlockingScreen>
               ),
               value: svc.adultFilterEnabled,
               onChanged: (val) async {
-                if (!val && svc.savedPassword != null) {
+                if (!val && svc.hasPassword) {
                   final granted = await _askForPasswordOnly(svc);
                   if (granted != true) return;
                 }
@@ -3570,4 +3667,5 @@ class _BlockingScreenState extends State<_BlockingScreen>
       ),
     );
   }
+
 }

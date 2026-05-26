@@ -185,7 +185,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               SafeArea(
                 child: Column(
                   children: [
-                    // PASEK KART
+                    // PASEK KART (tylko karty bieżącego trybu)
                     Container(
                       height: 40,
                       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -194,62 +194,77 @@ class _BrowserScreenState extends State<BrowserScreen>
                           Expanded(
                             child: ListView.builder(
                               scrollDirection: Axis.horizontal,
-                              itemCount: svc.tabs.length,
-                              itemBuilder: (context, index) => GestureDetector(
-                                onTap: () {
-                                  svc.switchTab(index);
-                                  urlController.text = svc.tabs[index].url;
-                                },
-                                child: Container(
-                                  margin: const EdgeInsets.only(right: 4),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: index == svc.currentTabIndex
-                                        ? _surfaceColor
-                                        : _bgColor.withOpacity(0.6),
-                                    borderRadius: const BorderRadius.vertical(
-                                      top: Radius.circular(10),
+                              itemCount: svc.tabs.where(
+                                (t) => t.isIncognito == svc.incognitoMode,
+                              ).length,
+                              itemBuilder: (context, i) {
+                                final modeTabs = svc.tabs.where(
+                                  (t) => t.isIncognito == svc.incognitoMode,
+                                ).toList();
+                                final index = svc.tabs.indexOf(modeTabs[i]);
+                                return GestureDetector(
+                                  onTap: () {
+                                    svc.switchTab(index);
+                                    urlController.text =
+                                        svc.tabs[index].url;
+                                  },
+                                  child: Container(
+                                    margin:
+                                        const EdgeInsets.only(right: 4),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
                                     ),
-                                    border: index == svc.currentTabIndex
-                                        ? Border.all(
-                                            color: _bordercolor,
-                                            width: 1,
-                                          )
-                                        : null,
-                                  ),
-                                  child: Center(
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (svc.tabs[index].isPlayingAudio)
-                                          const Padding(
-                                            padding: EdgeInsets.only(right: 4),
-                                            child: Icon(
-                                              Icons.volume_up,
-                                              size: 11,
-                                              color: Colors.lightBlueAccent,
+                                    decoration: BoxDecoration(
+                                      color: index == svc.currentTabIndex
+                                          ? _surfaceColor
+                                          : _bgColor.withOpacity(0.6),
+                                      borderRadius:
+                                          const BorderRadius.vertical(
+                                        top: Radius.circular(10),
+                                      ),
+                                      border: index == svc.currentTabIndex
+                                          ? Border.all(
+                                              color: _bordercolor,
+                                              width: 1,
+                                            )
+                                          : null,
+                                    ),
+                                    child: Center(
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (svc.tabs[index]
+                                              .isPlayingAudio)
+                                            const Padding(
+                                              padding:
+                                                  EdgeInsets.only(right: 4),
+                                              child: Icon(
+                                                Icons.volume_up,
+                                                size: 11,
+                                                color:
+                                                    Colors.lightBlueAccent,
+                                              ),
+                                            ),
+                                          Flexible(
+                                            child: Text(
+                                              svc.tabs[index].title,
+                                              style: TextStyle(
+                                                color: index ==
+                                                        svc.currentTabIndex
+                                                    ? Colors.white
+                                                    : Colors.grey,
+                                                fontSize: 11,
+                                              ),
+                                              overflow:
+                                                  TextOverflow.ellipsis,
                                             ),
                                           ),
-                                        Flexible(
-                                          child: Text(
-                                            svc.tabs[index].title,
-                                            style: TextStyle(
-                                              color:
-                                                  index == svc.currentTabIndex
-                                                  ? Colors.white
-                                                  : Colors.grey,
-                                              fontSize: 11,
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ),
+                                );
+                              },
                             ),
                           ),
                           IconButton(
@@ -455,36 +470,56 @@ class _BrowserScreenState extends State<BrowserScreen>
                 ),
               ),
 
-              // WEBVIEW
+              // WEBVIEW — dwa współdzielone + IndexedStack
               Expanded(
                 child: IndexedStack(
-                  index: svc.currentTabIndex,
-                  children: svc.tabs
-                      .map(
-                        (tab) => WebViewTab(
-                          key: ValueKey(tab),
-                          tab: tab,
-                          svc: svc,
-                          urlController: urlController,
-                          onPasswordRequired:
-                              (
-                                svc,
-                                url,
-                                ctrl, {
-                                reason = BlockReason.content,
-                                BlockMatch? match,
-                              }) {
-                                showPasswordDialog(
-                                  svc,
-                                  url,
-                                  ctrl,
-                                  reason: reason,
-                                  match: match,
-                                );
-                              },
-                        ),
-                      )
-                      .toList(),
+                  index: svc.incognitoMode ? 1 : 0,
+                  children: [
+                    WebViewTab(
+                      key: const ValueKey('normal_webview'),
+                      tab: svc.normalTab,
+                      svc: svc,
+                      urlController: urlController,
+                      incognito: false,
+                      onPasswordRequired: (
+                        svc,
+                        url,
+                        ctrl, {
+                        reason = BlockReason.content,
+                        BlockMatch? match,
+                      }) {
+                        showPasswordDialog(
+                          svc,
+                          url,
+                          ctrl,
+                          reason: reason,
+                          match: match,
+                        );
+                      },
+                    ),
+                    WebViewTab(
+                      key: const ValueKey('incognito_webview'),
+                      tab: svc.incognitoTab ?? svc.normalTab,
+                      svc: svc,
+                      urlController: urlController,
+                      incognito: true,
+                      onPasswordRequired: (
+                        svc,
+                        url,
+                        ctrl, {
+                        reason = BlockReason.content,
+                        BlockMatch? match,
+                      }) {
+                        showPasswordDialog(
+                          svc,
+                          url,
+                          ctrl,
+                          reason: reason,
+                          match: match,
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ),
             ],

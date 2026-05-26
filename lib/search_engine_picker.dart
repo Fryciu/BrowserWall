@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'browser_service.dart';
+import 'pattern_lock.dart';
 
 // ── Wbudowane wyszukiwarki ───────────────────────────────────────────────────
 final _builtinEngines = [
@@ -82,7 +83,55 @@ class _SearchEnginePickerState extends State<SearchEnginePicker> {
   // ── Weryfikacja hasła ────────────────────────────────────────────────────
 
   Future<bool> _verifyPassword(BrowserService svc) async {
-    if (svc.savedPassword == null || svc.savedPassword!.isEmpty) return true;
+    if (!svc.hasPassword) return true;
+
+    if (svc.isBiometricType) {
+      return svc.verifyWithBiometrics();
+    }
+
+    if (svc.isPatternType) {
+      bool ok = false;
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF202124),
+          title: const Text(
+            'Wymagany wzór',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Narysuj wzór, aby odblokować',
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              PatternLock(
+                onPatternEntered: (pattern) {
+                  if (svc.verifyPattern(pattern)) {
+                    ok = true;
+                    Navigator.pop(ctx);
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Błędny wzór!')),
+                    );
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('ANULUJ', style: TextStyle(color: Colors.grey)),
+            ),
+          ],
+        ),
+      );
+      return ok;
+    }
+
     String entered = '';
     final ok = await showDialog<bool>(
       context: context,

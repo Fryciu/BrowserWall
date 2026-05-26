@@ -17,6 +17,7 @@ class WebViewTab extends StatefulWidget {
   final TabModel tab;
   final BrowserService svc;
   final TextEditingController urlController;
+  final bool incognito;
   final void Function(
     BrowserService,
     WebUri,
@@ -32,6 +33,7 @@ class WebViewTab extends StatefulWidget {
     required this.svc,
     required this.urlController,
     required this.onPasswordRequired,
+    this.incognito = false,
   }) : super(key: key);
 
   @override
@@ -47,10 +49,12 @@ class _WebViewTabState extends State<WebViewTab>
   @override
   bool get wantKeepAlive => true;
 
+  InAppWebViewController? _controller;
   double _progress = 0;
   int _webViewKey = 0;
   int _lastAdBlockVersion = 0;
   bool _timeLimitBlocked = false;
+  TabModel? _lastTab;
 
   void _onSvcChanged() {
     final svc = widget.svc;
@@ -382,7 +386,23 @@ class _WebViewTabState extends State<WebViewTab>
   void initState() {
     super.initState();
     _lastAdBlockVersion = widget.svc.adBlockVersion;
+    _lastTab = widget.tab;
     widget.svc.addListener(_onSvcChanged);
+  }
+
+  @override
+  void didUpdateWidget(WebViewTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final ctrl = _controller;
+    if (ctrl == null) { _lastTab = widget.tab; return; }
+    if (identical(widget.tab, _lastTab)) return;
+    _lastTab = widget.tab;
+    widget.tab.controller = ctrl;
+    final url = widget.tab.url;
+    if (url.isNotEmpty && !url.startsWith('about:')) {
+      _timeLimitBlocked = false;
+      ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
+    }
   }
 
   @override
@@ -421,9 +441,9 @@ class _WebViewTabState extends State<WebViewTab>
             domStorageEnabled: true,
             databaseEnabled: true,
             thirdPartyCookiesEnabled: true,
-            incognito: false,
+            incognito: widget.incognito,
             allowsInlineMediaPlayback: true,
-            sharedCookiesEnabled: true,
+            sharedCookiesEnabled: !widget.incognito,
             javaScriptEnabled: true,
             supportMultipleWindows: true,
             javaScriptCanOpenWindowsAutomatically: true,
@@ -452,6 +472,7 @@ class _WebViewTabState extends State<WebViewTab>
             svc.updateTab(tab, title: title);
           },
           onWebViewCreated: (c) {
+            _controller = c;
             tab.controller = c;
 
             // Tracking czasu — rejestruj co 5s na potrzeby limitów czasowych

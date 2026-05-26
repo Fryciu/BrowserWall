@@ -13,10 +13,15 @@ import 'package:http/http.dart' as http;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dictionary_service.dart';
 import 'package:google_mlkit_language_id/google_mlkit_language_id.dart';
+import 'package:crypto/crypto.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:local_auth/local_auth.dart';
 
 // ─────────────────────────────────────────────
 //  MODEL
 // ─────────────────────────────────────────────
+
+enum PasswordType { text, biometric, pattern }
 
 class TabModel {
   InAppWebViewController? controller;
@@ -126,7 +131,31 @@ class BrowserService extends ChangeNotifier {
 
   // --- Stan ---
   List<TabModel> tabs = [TabModel(url: 'https://www.google.com')];
-  int currentTabIndex = 0;
+  int normalTabIndex = 0;
+  int incognitoTabIndex = -1;
+
+  int get currentTabIndex => incognitoMode
+      ? (incognitoTabIndex >= 0 ? incognitoTabIndex : 0)
+      : normalTabIndex;
+  set currentTabIndex(int val) {
+    if (incognitoMode) {
+      incognitoTabIndex = val;
+    } else {
+      normalTabIndex = val;
+    }
+  }
+
+  /// Zwraca bezpieczny indeks dla trybu normalnego (zawsze >= 0, < tabs.length)
+  int get safeNormalIndex => normalTabIndex.clamp(0, tabs.length - 1);
+  /// Zwraca bezpieczny indeks dla trybu incognito (-1 gdy brak incognito kart)
+  int get safeIncognitoIndex =>
+      incognitoTabIndex < 0 || incognitoTabIndex >= tabs.length
+          ? tabs.indexWhere((t) => t.isIncognito)
+          : incognitoTabIndex;
+
+  TabModel get normalTab => tabs[safeNormalIndex];
+  TabModel? get incognitoTab =>
+      safeIncognitoIndex >= 0 ? tabs[safeIncognitoIndex] : null;
 
   final DictionaryService dictionaryService = DictionaryService();
   LanguageIdentifier? _languageIdentifier;
@@ -390,7 +419,15 @@ class BrowserService extends ChangeNotifier {
   Set<String> remoteBlockedDomains = {};
   Set<String> remoteBlockedProxy = {};
   List<Map<String, String>> history = [];
-  String? savedPassword;
+  bool _hasPassword = false;
+  String? _passwordHash;
+  String? _patternHash;
+  PasswordType passwordType = PasswordType.text;
+  final _secureStorage = FlutterSecureStorage();
+  final _localAuth = LocalAuthentication();
+  bool get hasPassword => _hasPassword;
+  bool get isBiometricType => passwordType == PasswordType.biometric;
+  bool get isPatternType => passwordType == PasswordType.pattern;
   bool isVerifying = false;
   bool adBlockEnabled = true;
   List<String> adBlockWhitelist = [];
@@ -559,6 +596,15 @@ class BrowserService extends ChangeNotifier {
 
     final t2 = DateTime.now();
     await loadTabs();
+    // Jeśli incognitoMode = true ale nie ma incognito kart, dodaj jedną
+    if (incognitoMode && safeIncognitoIndex < 0) {
+      tabs.add(TabModel(
+        url: homePageUrl,
+        loaded: true,
+        isIncognito: true,
+      ));
+      incognitoTabIndex = tabs.length - 1;
+    }
     print("loadTabs: ${DateTime.now().difference(t2).inMilliseconds}ms");
 
     final t3 = DateTime.now();
@@ -772,7 +818,7 @@ class BrowserService extends ChangeNotifier {
     // Zapisz też słownik tłumaczeń
     await prefs.setString('word_translations', json.encode(_wordTranslations));
     debugPrint('✅ pornKeywords expanded: ${expanded.length} słów');
-    debugPrint('Saved password: ${savedPassword}');
+    debugPrint('Has password: $_hasPassword');
   }
 
   // Nazwy własne i marki których NIE wolno dodać jako tłumaczenia
@@ -1157,12 +1203,42 @@ class BrowserService extends ChangeNotifier {
   }
 
   bool incognitoMode = false;
+  int? _cachedSdkInt;
 
-  Future<void> toggleIncognito() async {
+  Future<bool> get _isAndroidBelow14 async {
+    if (!Platform.isAndroid) return false;
+    if (_cachedSdkInt != null) return _cachedSdkInt! < 34;
+    try {
+      final info = DeviceInfoPlugin();
+      final android = await info.androidInfo;
+      _cachedSdkInt = android.version.sdkInt;
+      return _cachedSdkInt! < 34;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<bool> toggleIncognito() async {
     incognitoMode = !incognitoMode;
+    // Gdy wchodzimy w incognito → usuń wszystkie ciasteczka dla izolacji
+    if (incognitoMode) {
+      await CookieManager.instance().deleteAllCookies();
+      await InAppWebViewController.clearAllCache();
+    }
+    // Znajdź pierwszą kartę dla nowego trybu
+    final targetIndex = tabs.indexWhere((t) => t.isIncognito == incognitoMode);
+    if (targetIndex >= 0) {
+      currentTabIndex = targetIndex;
+    } else {
+      tabs.add(TabModel(url: homePageUrl, loaded: true, isIncognito: incognitoMode));
+      currentTabIndex = tabs.length - 1;
+    }
     final prefs = await _getPrefs;
     await prefs.setBool('incognito_mode', incognitoMode);
+    saveTabs();
     notifyListeners();
+    if (incognitoMode) return _isAndroidBelow14;
+    return false;
   }
 
   Future<void> clearAllHistory() async {
@@ -1374,7 +1450,40 @@ class BrowserService extends ChangeNotifier {
     );
 
     final t1 = DateTime.now();
-    savedPassword = p.getString('user_password');
+    String? storedHash;
+    String? storedPattern;
+    try {
+      storedHash = await _secureStorage.read(key: 'password_hash');
+      storedPattern = await _secureStorage.read(key: 'pattern_hash');
+    } catch (_) {}
+    final typeStr = p.getString('password_type');
+    if (typeStr == 'biometric') {
+      passwordType = PasswordType.biometric;
+      _hasPassword = true;
+    } else if (typeStr == 'pattern') {
+      passwordType = PasswordType.pattern;
+      if (storedPattern != null) {
+        _patternHash = storedPattern;
+        _hasPassword = true;
+      }
+    } else {
+      passwordType = PasswordType.text;
+      if (storedHash != null) {
+        _passwordHash = storedHash;
+        _hasPassword = true;
+      }
+    }
+    if (!_hasPassword) {
+      final oldPassword = p.getString('user_password');
+      if (oldPassword != null) {
+        _passwordHash = _hashPassword(oldPassword);
+        await _secureStorage.write(key: 'password_hash', value: _passwordHash!);
+        _hasPassword = true;
+        passwordType = PasswordType.text;
+        await _savePasswordType();
+        await p.remove('user_password');
+      }
+    }
     adBlockEnabled = p.getBool('adblock_enabled') ?? true;
     adultFilterEnabled = p.getBool('adult_filter_enabled') ?? true;
     incognitoMode = p.getBool('incognito_mode') ?? false;
@@ -2571,7 +2680,7 @@ class BrowserService extends ChangeNotifier {
         }
       }
 
-      if (savedPassword != null) {
+      if (_hasPassword) {
         if (canSkipAuth(urlString)) {
           return false; // już autoryzowana, przepuść
         }
@@ -2676,15 +2785,107 @@ class BrowserService extends ChangeNotifier {
     return null; // nie rozpoznana wyszukiwarka
   }
 
+  String _hashPassword(String password) {
+    return sha256.convert(utf8.encode(password)).toString();
+  }
+
+  String _patternToString(List<int> pattern) {
+    return pattern.join(',');
+  }
+
   bool verifyPassword(String entered) {
-    return entered == savedPassword;
+    if (passwordType != PasswordType.text || _passwordHash == null) return false;
+    return _hashPassword(entered) == _passwordHash;
+  }
+
+  bool verifyPattern(List<int> pattern) {
+    if (passwordType != PasswordType.pattern || _patternHash == null) return false;
+    return _hashPassword(_patternToString(pattern)) == _patternHash;
   }
 
   Future<void> savePassword(String newPassword) async {
-    final prefs = await _getPrefs;
-    await prefs.setString('user_password', newPassword);
-    savedPassword = newPassword;
+    passwordType = PasswordType.text;
+    final hash = _hashPassword(newPassword);
+    await _secureStorage.write(key: 'password_hash', value: hash);
+    await _secureStorage.delete(key: 'pattern_hash');
+    _passwordHash = hash;
+    _patternHash = null;
+    _hasPassword = true;
+    await _savePasswordType();
     notifyListeners();
+  }
+
+  Future<void> savePattern(List<int> pattern) async {
+    passwordType = PasswordType.pattern;
+    final hash = _hashPassword(_patternToString(pattern));
+    await _secureStorage.write(key: 'pattern_hash', value: hash);
+    await _secureStorage.delete(key: 'password_hash');
+    _patternHash = hash;
+    _passwordHash = null;
+    _hasPassword = true;
+    await _savePasswordType();
+    notifyListeners();
+  }
+
+  Future<void> enableBiometric() async {
+    passwordType = PasswordType.biometric;
+    _passwordHash = null;
+    _patternHash = null;
+    _hasPassword = true;
+    await _secureStorage.delete(key: 'password_hash');
+    await _secureStorage.delete(key: 'pattern_hash');
+    await _savePasswordType();
+    notifyListeners();
+  }
+
+  Future<void> clearPassword() async {
+    await _secureStorage.delete(key: 'password_hash');
+    await _secureStorage.delete(key: 'pattern_hash');
+    _passwordHash = null;
+    _patternHash = null;
+    _hasPassword = false;
+    passwordType = PasswordType.text;
+    await _savePasswordType();
+    notifyListeners();
+  }
+
+  Future<void> _savePasswordType() async {
+    final prefs = await _getPrefs;
+    String? typeStr;
+    if (passwordType == PasswordType.biometric) typeStr = 'biometric';
+    else if (passwordType == PasswordType.pattern) typeStr = 'pattern';
+    if (typeStr != null) {
+      await prefs.setString('password_type', typeStr);
+    } else {
+      await prefs.remove('password_type');
+    }
+  }
+
+  Future<bool> get isBiometricAvailable async {
+    try {
+      return await _localAuth.canCheckBiometrics ||
+          await _localAuth.isDeviceSupported();
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<bool> verifyWithBiometrics({String reason = 'Odblokuj, aby kontynuować'}) async {
+    try {
+      await _localAuth.stopAuthentication();
+    } catch (_) {}
+    try {
+      return await _localAuth.authenticate(
+        localizedReason: reason,
+        options: const AuthenticationOptions(
+          biometricOnly: false,
+          stickyAuth: true,
+        ),
+      );
+    } catch (e) {
+      debugPrint('Biometric auth error: $e');
+      return false;
+    }
   }
 
   List<ContentBlocker> getContentBlockers() {
@@ -2966,21 +3167,30 @@ class BrowserService extends ChangeNotifier {
   void closeTab(int index) {
     if (tabs.length <= 1) return;
     tabs.removeAt(index);
-    if (currentTabIndex >= tabs.length) currentTabIndex = tabs.length - 1;
+    // Dostosuj indeksy per tryb
+    if (normalTabIndex > index) normalTabIndex--;
+    else if (normalTabIndex == index && normalTabIndex >= tabs.length) {
+      normalTabIndex = tabs.length - 1;
+    }
+    if (incognitoTabIndex > index) incognitoTabIndex--;
+    else if (incognitoTabIndex == index && incognitoTabIndex >= tabs.length) {
+      incognitoTabIndex = tabs.length - 1;
+    }
     saveTabs();
     notifyListeners();
   }
 
   void closeAllTabs() {
     tabs = [TabModel(url: homePageUrl, loaded: true)];
-    currentTabIndex = 0;
+    normalTabIndex = 0;
+    incognitoTabIndex = -1;
     saveTabs();
     notifyListeners();
   }
 
   void switchTab(int index) {
     currentTabIndex = index;
-    tabs[index].loaded = true; // ← dopiero teraz ta karta się załaduje
+    tabs[index].loaded = true;
     saveTabs();
     notifyListeners();
   }
@@ -3210,12 +3420,11 @@ class BrowserService extends ChangeNotifier {
     final tabsData = normalTabs.map((t) {
       final url = t.url.isNotEmpty && !t.url.startsWith('about:') ? t.url : '';
       final title = _isUsableTabTitle(t.title) ? t.title : _titleFromUrl(url);
-      return {'url': url, 'title': title};
+      return {'url': url, 'title': title, 'incognito': false};
     }).toList();
     // Oblicz index względem normalnych kart
-    final normalIndex = tabs.indexOf(tabs[currentTabIndex]);
     final savedIndex = normalTabs.indexWhere(
-      (t) => tabs.indexOf(t) == normalIndex,
+      (t) => tabs.indexOf(t) == normalTabIndex,
     );
     final encoded = json.encode(tabsData);
     await prefs.setString('saved_tabs', encoded);
@@ -3239,11 +3448,13 @@ class BrowserService extends ChangeNotifier {
                     ? e['title'] as String
                     : _titleFromUrl(e['url'] as String),
                 loaded: false,
+                isIncognito: (e['incognito'] as bool?) ?? false,
               ),
             )
             .toList();
-        currentTabIndex = savedIndex.clamp(0, tabs.length - 1);
-        tabs[currentTabIndex].loaded = true;
+        normalTabIndex = savedIndex.clamp(0, tabs.length - 1);
+        incognitoTabIndex = -1;
+        tabs[normalTabIndex].loaded = true;
         debugPrint(
           '📂 loadTabs: ${tabs.length} kart, aktywna $currentTabIndex',
         );

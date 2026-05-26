@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'browser_service.dart';
+import 'pattern_lock.dart';
 
 class TimeRulesScreen extends StatelessWidget {
   const TimeRulesScreen({super.key});
@@ -95,69 +96,63 @@ class TimeRulesScreen extends StatelessWidget {
     BrowserService svc,
     String domain,
   ) async {
-    if (svc.savedPassword != null) {
-      String entered = "";
-      final granted = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF202124),
-          title: const Text(
-            "Wymagane hasło",
-            style: TextStyle(color: Colors.white),
-          ),
-          content: TextField(
-            obscureText: true,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white),
-            onChanged: (v) => entered = v,
-            decoration: const InputDecoration(hintText: "Wpisz hasło"),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text("ANULUJ"),
-            ),
-            TextButton(
-              onPressed: () {
-                if (svc.verifyPassword(entered)) {
-                  Navigator.pop(ctx, true);
-                } else {
-                  ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(content: Text("Błędne hasło!")),
-                  );
-                }
-              },
-              child: const Text("POTWIERDŹ"),
-            ),
-          ],
-        ),
-      );
-      if (granted != true) return;
-    }
-    svc.removeTimeRule(domain);
-  }
-
-  void _openRuleEditor(
-    BuildContext context,
-    BrowserService svc, {
-    TimeRule? existing,
-    String? existingKey,
-  }) async {
     final granted = await _confirmPassword(context, svc);
-    if (granted != true || !context.mounted) return;
-    _showAddRuleDialog(
-      context,
-      svc,
-      existing: existing,
-      existingKey: existingKey,
-    );
+    if (granted != true) return;
+    svc.removeTimeRule(domain);
   }
 
   Future<bool> _confirmPassword(
     BuildContext context,
     BrowserService svc,
   ) async {
-    if (svc.savedPassword == null) return true;
+    if (!svc.hasPassword) return true;
+
+    if (svc.isBiometricType) {
+      return svc.verifyWithBiometrics();
+    }
+
+    if (svc.isPatternType) {
+      bool ok = false;
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF202124),
+          title: const Text(
+            "Wymagany wzór",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Narysuj wzór, aby odblokować',
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              PatternLock(
+                onPatternEntered: (pattern) {
+                  if (svc.verifyPattern(pattern)) {
+                    ok = true;
+                    Navigator.pop(ctx);
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Błędny wzór!")),
+                    );
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("ANULUJ"),
+            ),
+          ],
+        ),
+      );
+      return ok;
+    }
 
     String entered = "";
     final granted = await showDialog<bool>(
@@ -174,15 +169,6 @@ class TimeRulesScreen extends StatelessWidget {
           style: const TextStyle(color: Colors.white),
           onChanged: (v) => entered = v,
           decoration: const InputDecoration(hintText: "Wpisz hasło"),
-          onSubmitted: (_) {
-            if (svc.verifyPassword(entered)) {
-              Navigator.pop(ctx, true);
-            } else {
-              ScaffoldMessenger.of(
-                ctx,
-              ).showSnackBar(const SnackBar(content: Text("Błędne hasło!")));
-            }
-          },
         ),
         actions: [
           TextButton(
@@ -194,9 +180,9 @@ class TimeRulesScreen extends StatelessWidget {
               if (svc.verifyPassword(entered)) {
                 Navigator.pop(ctx, true);
               } else {
-                ScaffoldMessenger.of(
-                  ctx,
-                ).showSnackBar(const SnackBar(content: Text("Błędne hasło!")));
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text("Błędne hasło!")),
+                );
               }
             },
             child: const Text("POTWIERDŹ"),
@@ -205,6 +191,22 @@ class TimeRulesScreen extends StatelessWidget {
       ),
     );
     return granted == true;
+  }
+
+  void _openRuleEditor(
+    BuildContext context,
+    BrowserService svc, {
+    TimeRule? existing,
+    String? existingKey,
+  }) async {
+    final granted = await _confirmPassword(context, svc);
+    if (granted != true || !context.mounted) return;
+    _showAddRuleDialog(
+      context,
+      svc,
+      existing: existing,
+      existingKey: existingKey,
+    );
   }
 
   void _showAddRuleDialog(
